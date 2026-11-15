@@ -1,0 +1,10 @@
+[package]
+name = "cargo-solo"
+version = "0.1.0"
+edition = "2024"
+description = "Cross-compile Rust for Linux and Windows from macOS, Linux or Windows with the host's clang and rustup's lld: no Zig, no Docker."
+authors = ["vladkens"]
+license = "MIT"
+repository = "https://github.com/vladkens/cargo-solo"
+
+[dependencies]
