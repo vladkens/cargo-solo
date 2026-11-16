@@ -186,9 +186,9 @@ pub const MINGW_X64: &[Package] = &[
   ),
   Package {
     mirrors: RUSTUP,
-    path: "dist/2026-10-15/rust-mingw-1.99.1-x86_64-pc-windows-gnu.tar.xz",
-    sha256: "1dca8e0d253565dbf21296eabc3e8d6e06e607e92c59dc00e3ecff902fe3d5ae",
-    root: "rust-mingw-1.99.1-x86_64-pc-windows-gnu/rust-mingw/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained/",
+    path: "dist/2026-11-12/rust-mingw-1.100.0-x86_64-pc-windows-gnu.tar.xz",
+    sha256: "5491d2ad03b0f124307c8b2c4ac840b65e738a348f4381975f0e638b012e4ae9",
+    root: "rust-mingw-1.100.0-x86_64-pc-windows-gnu/rust-mingw/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained/",
     keep: &["libgcc"],
     into: "usr/x86_64-w64-mingw32/lib/",
   },
