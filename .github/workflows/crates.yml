@@ -51,7 +51,8 @@ jobs:
       - run: cargo install --locked --path solo
       - run: echo "CARGO_SOLO_CACHE=$RUNNER_TEMP/cargo-solo" >> "$GITHUB_ENV"
       # What the crates need of the host, as their users install it: nasm for boring-sys's
-      # Windows asm, and on Windows a full Perl for openssl-src, not Git's.
+      # Windows asm, and on Windows MSYS2's Perl and make for openssl-src, which Git's Perl lacks
+      # modules for and Strawberry's can't run: its paths have `\`.
       - if: runner.os == 'Linux'
         run: sudo apt-get install -y -q nasm
       - if: runner.os == 'macOS'
@@ -60,7 +61,12 @@ jobs:
         run: |
           choco install -y --no-progress nasm
           echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
-          echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+          /c/msys64/usr/bin/pacman.exe -S --noconfirm --needed perl make
+          echo 'OPENSSL_SRC_PERL=C:\msys64\usr\bin\perl.exe' >> "$GITHUB_ENV"
+      # Last on PATH, so that MSYS2's make is found and nothing else of it comes first.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_ENV "PATH=$env:PATH;C:\msys64\usr\bin"
       - working-directory: tests/crates
         run: cargo solo build --release --keep-going --workspace --target ${{ matrix.target }} 2>&1 | tee build.log || true
       - run: uv run tests/crates/crates.py collect ${{ runner.os }} ${{ matrix.target }} out
