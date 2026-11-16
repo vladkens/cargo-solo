@@ -115,7 +115,8 @@ def build(out: Path) -> None:
     tool = readobj()
     for crate, (name, _) in CRATES.items():
         dest = ROOT / "target" / crate
-        cmd = [solo, "solo", "build", "--release", "--target-dir", dest, *args]
+        # --keep-going: every target that fails, not only the first
+        cmd = [solo, "solo", "build", "--release", "--keep-going", "--target-dir", dest, *args]
         run(*cmd, cwd=ROOT / "tests" / crate)
         for target in targets:
             file = f"{name}.exe" if "-windows-" in target else name
