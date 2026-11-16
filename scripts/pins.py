@@ -1,0 +1,164 @@
+# Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Re-pins the packages in src/packages.rs to what Debian and rustup have now (`make pins`).
+
+uv run scripts/pins.py
+
+A Debian package is `Package::deb(TRIXIE, "<pool path>", "<sha256>")`: its release is the mirror
+table's name, its name and arch are in the file name; a new one can have the empty hash. A
+release's snapshot.debian.org mirror moves to the latest snapshot when one of its packages
+changes. A snapshot lags Debian by up to six hours: until it has the new packages, nothing is
+written.
+"""
+
+import lzma
+import re
+import sys
+import time
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src" / "packages.rs"
+MANIFEST = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
+MINGW = "x86_64-pc-windows-gnu"
+
+TABLE = re.compile(r"const (\w+): &\[&str\] =\s*&\[(.*?)\];", re.S)
+DEB = re.compile(r'Package::deb\(\s*(\w+),\s*"([^"]+)",\s*"([0-9a-f]*)",?\s*\)')
+SNAPSHOT = re.compile(r"https://snapshot\.debian\.org/archive/([\w-]+)/(\d{8}T\d{6}Z)")
+RUST_MINGW = re.compile(
+    r'mirrors: RUSTUP,\s*path: "([^"]+)",\s*sha256: "([0-9a-f]*)",\s*root: "([^"]+)"'
+)
+
+
+def log(msg: str):
+    print(f"pins: {msg}", flush=True)
+
+
+def get(url: str, method="GET"):
+    req = urllib.request.Request(url, method=method)
+    return urllib.request.urlopen(req, timeout=120)
+
+
+# MARK: Debian
+
+
+def index(mirror: str, release: str, arch: str) -> dict[str, list[dict]]:
+    url = f"{mirror}/dists/{release}/main/binary-{arch}/Packages.xz"
+    log(f"reading {url}")
+    text = lzma.decompress(get(url).read()).decode()
+
+    # a list: buster has a few `all` packages in two versions
+    rs = {}
+    for block in text.split("\n\n"):
+        pld = dict(re.findall(r"^([\w-]+): (.*)$", block, re.M))
+        if "Package" in pld:
+            rs.setdefault(pld["Package"], []).append(pld)
+
+    return rs
+
+
+def latest(archive: str) -> str:
+    # snapshot.debian.org redirects a time to the snapshot before it
+    now = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    url = get(f"https://snapshot.debian.org/archive/{archive}/{now}/", "HEAD").geturl()
+    return SNAPSHOT.search(url)[2]
+
+
+def debian(src: str) -> str:
+    tables = {name: re.findall(r'"([^"]+)"', body) for name, body in TABLE.findall(src)}
+    indexes = {}
+    changed = {}  # table -> new paths
+
+    def repin(m: re.Match) -> str:
+        table, path, sha = m.groups()
+        name, ver, arch = Path(path).stem.split("_")
+        key = (table, "amd64" if arch == "all" else arch)
+        if key not in indexes:
+            indexes[key] = index(tables[table][0], table.lower(), key[1])
+
+        found = indexes[key].get(name, [])
+        if len(found) != 1:
+            vers = ", ".join(x["Version"] for x in found) or "none"
+            sys.exit(f"pins: {name} in {table.lower()} for {key[1]}: {vers}, pin it by hand")
+
+        new_path, new_sha = found[0]["Filename"], found[0]["SHA256"]
+        if (new_path, new_sha) == (path, sha):
+            return m[0]
+
+        new_ver = Path(new_path).stem.split("_")[1]
+        log(f"{name} {arch}: {ver} -> {new_ver}" if new_ver != ver else f"{name} {arch}: hash")
+        if ver.rsplit("-", 1)[0] != new_ver.rsplit("-", 1)[0]:
+            log(f"{name}: new upstream version, check Libc::version and readme.md")
+
+        changed.setdefault(table, []).append(new_path)
+        return m[0].replace(path, new_path).replace(f'"{sha}"', f'"{new_sha}"')
+
+    src = DEB.sub(repin, src)
+
+    for m in TABLE.finditer(src):
+        snap = SNAPSHOT.search(m[0])
+        if m[1] not in changed or not snap:
+            continue
+
+        ts = latest(snap[1])
+        log(f"{m[1]}: snapshot {snap[2]} -> {ts}")
+
+        # nothing is written until the snapshot has them, so the next run tries again
+        mirror = next(x for x in tables[m[1]] if SNAPSHOT.search(x)).replace(snap[2], ts)
+        for path in changed[m[1]]:
+            try:
+                get(f"{mirror}/{path}", "HEAD")
+            except urllib.error.HTTPError as e:
+                sys.exit(f"pins: {path} on snapshot {ts}: {e}, run again later")
+
+        src = src.replace(m[0], m[0].replace(snap[2], ts))
+
+    return src
+
+
+# MARK: Rustup
+
+
+def rustup(src: str) -> str:
+    m = RUST_MINGW.search(src)
+    path, sha, root = m.groups()
+
+    log(f"reading {MANIFEST}")
+    rep = tomllib.loads(get(MANIFEST).read().decode())
+    pkg = rep["pkg"]["rust-mingw"]["target"][MINGW]
+    new_path, new_sha = pkg["xz_url"].removeprefix("https://static.rust-lang.org/"), pkg["xz_hash"]
+    if (new_path, new_sha) == (path, sha):
+        return src
+
+    log(f"rust-mingw: {path} -> {new_path}")
+    # the root starts with the archive's top folder, named as the file
+    top = Path(new_path).name.removesuffix(".tar.xz")
+    new_root = f"{top}/{root.split('/', 1)[1]}"
+
+    block = m[0].replace(path, new_path).replace(f'"{sha}"', f'"{new_sha}"')
+    block = block.replace(f'"{root}"', f'"{new_root}"')
+    return src.replace(m[0], block)
+
+
+def main():
+    src = SRC.read_text()
+
+    # only the tables' block: the tests have packages too
+    start = src.index("// MARK: Packages")
+    end = src.index("// MARK:", start + 1)
+    new = src[:start] + rustup(debian(src[start:end])) + src[end:]
+    if new == src:
+        log("all current")
+        return
+
+    SRC.write_text(new)
+    log(f"rewrote {SRC.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()

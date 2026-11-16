@@ -21,54 +21,58 @@ NOT_STATEMENT = ("}", ")", "]", ".", "else", "//", "#[")
 
 
 def missing(lines: list[str]) -> list[int]:
-  """Indexes of the lines that need a blank line above them."""
-  opened: list[int] = []
-  out = []
+    """Indexes of the lines that need a blank line above them."""
+    opened: list[int] = []
+    out = []
 
-  for i, raw in enumerate(lines):
-    text = raw.strip()
-    indent = len(raw) - len(raw.lstrip())
-    if OPEN.match(text):
-      opened.append(indent)
-      continue
+    for i, raw in enumerate(lines):
+        text = raw.strip()
+        indent = len(raw) - len(raw.lstrip())
+        if OPEN.match(text):
+            opened.append(indent)
+            continue
 
-    if not (opened and indent == opened[-1] and CLOSE.match(text)):
-      continue
+        if not (opened and indent == opened[-1] and CLOSE.match(text)):
+            continue
 
-    opened.pop()
-    if i + 1 >= len(lines):
-      continue
+        opened.pop()
+        if i + 1 >= len(lines):
+            continue
 
-    after = lines[i + 1]
-    if after.strip() and len(after) - len(after.lstrip()) == indent and not after.strip().startswith(NOT_STATEMENT):
-      out.append(i + 1)
+        after = lines[i + 1]
+        if (
+            after.strip()
+            and len(after) - len(after.lstrip()) == indent
+            and not after.strip().startswith(NOT_STATEMENT)
+        ):
+            out.append(i + 1)
 
-  return out
+    return out
 
 
 def main():
-  args = sys.argv[1:]
-  fix = "--fix" in args
-  roots = [Path(a) for a in args if a != "--fix"] or [ROOT / d for d in ("src", "tests")]
-  found = 0
+    args = sys.argv[1:]
+    fix = "--fix" in args
+    roots = [Path(a) for a in args if a != "--fix"] or [ROOT / d for d in ("src", "tests")]
+    found = 0
 
-  for path in sorted(p for r in roots for p in ([r] if r.is_file() else r.rglob("*.rs"))):
-    lines = path.read_text().splitlines(keepends=True)
-    hits = missing(lines)
-    found += len(hits)
-    for i in hits:
-      print(f"{path}:{i + 1}: {lines[i].strip()}")
+    for path in sorted(p for r in roots for p in ([r] if r.is_file() else r.rglob("*.rs"))):
+        lines = path.read_text().splitlines(keepends=True)
+        hits = missing(lines)
+        found += len(hits)
+        for i in hits:
+            print(f"{path}:{i + 1}: {lines[i].strip()}")
 
-    if fix and hits:
-      for i in reversed(hits):
-        lines.insert(i, "\n")
+        if fix and hits:
+            for i in reversed(hits):
+                lines.insert(i, "\n")
 
-      path.write_text("".join(lines))
+            path.write_text("".join(lines))
 
-  if found and not fix:
-    print(f"{found} statements need a blank line above them; `uv run scripts/blank-lines.py --fix` adds them")
-    sys.exit(1)
+    if found and not fix:
+        print(f"{found} statements need a blank line above them; `make prepare` adds them")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-  main()
+    main()

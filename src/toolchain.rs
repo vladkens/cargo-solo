@@ -16,6 +16,9 @@ const CLANG: &str = "CARGO_SOLO_CLANG";
 /// The folder of rustup's `ld.lld`, which runs rust-lld as GNU ld, for clang's `-B`; set by
 /// cargo-solo.
 const GCC_LD: &str = "CARGO_SOLO_GCC_LD";
+/// aws-lc-sys, rustls' crypto, assembles x86_64 Windows' code with nasm, which a host seldom has;
+/// this lets it take the objects it ships instead, when there's no nasm.
+const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
 
 // MARK: Targets
 
@@ -174,16 +177,72 @@ impl Host {
   }
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it.
-  pub fn setup(&self, target: &Target) -> io::Result<[(String, OsString); 3]> {
+  /// gives the environment cargo runs with for it, and for Windows, rustc's dlltool in front of
+  /// PATH and aws-lc-sys's NASM objects, unless the user chose in cargo's `args`, config or
+  /// environment.
+  pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     if !self.sysroot.join("lib/rustlib").join(target.rust).join("lib").is_dir() {
       rustup(&self.sysroot, &["target", "add", target.rust])?;
     }
 
     let sysroot = packages::ensure(&self.cache, target.clang, target.packages)?;
     let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
-    Ok(target.env(&cc, &self.bin.join(exe("llvm-ar"))))
+    let ar = self.bin.join(exe("llvm-ar"));
+    let mut out = target.env(&cc, &ar).to_vec();
+    if target.libc != Libc::Mingw {
+      return Ok(out);
+    }
+
+    let dir = dlltool(&self.cache.join("bin"), target, &ar)?;
+    let path = env::var_os("PATH").unwrap_or_default();
+    let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
+    out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
+    let nasm = format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_"));
+    if !chosen(&[PREBUILT_NASM, &nasm], args, &env::current_dir()?) {
+      out.push((nasm, "1".into()));
+    }
+
+    Ok(out)
   }
+}
+
+/// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside comments
+/// in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo`
+/// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
+/// needs.
+fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
+  let named =
+    |x: &str| x.split(|x: char| !x.is_alphanumeric() && x != '_').any(|x| vars.contains(&x));
+  let args: Vec<_> = args.iter().map(|x| x.to_string_lossy()).collect();
+  if vars.iter().any(|x| env::var_os(x).is_some()) || args.iter().any(|x| named(x)) {
+    return true;
+  }
+
+  let given = args.iter().map(|x| here.join(x.strip_prefix("--config=").unwrap_or(x)));
+  let given = given.filter(|x| x.extension().is_some_and(|x| x == "toml"));
+  let home = env::var_os("CARGO_HOME").map(PathBuf::from);
+  let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
+  let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
+  let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
+  let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
+  texts.any(|x| x.lines().any(|x| named(code(x))))
+}
+
+/// A TOML `line` without its comment, from the first `#` outside quotes.
+fn code(line: &str) -> &str {
+  let (mut quote, mut escaped) = (None, false);
+  for (i, c) in line.char_indices() {
+    match (quote, c) {
+      _ if escaped => escaped = false,
+      (Some('"'), '\\') => escaped = true,
+      (None, '#') => return &line[..i],
+      (None, '"' | '\'') => quote = Some(c),
+      (Some(q), _) if c == q => quote = None,
+      _ => {}
+    }
+  }
+
+  line
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -230,55 +289,78 @@ fn rustup(sysroot: &Path, args: &[&str]) -> io::Result<()> {
 // MARK: Wrapper
 
 /// The wrapper for `target`, `<target>-clang`: a link to this program in a folder of `bin` that its
-/// path and the target's `sysroot` name, made anew when it is another's. So a build never runs
-/// another cargo-solo, with other tables, and when the sysroot changes, cargo and cc-rs see another
-/// `CC_<t>` and linker, and build anew.
+/// path and the target's `sysroot` name. So a build never runs another cargo-solo, with other
+/// tables, and when the sysroot changes, cargo and cc-rs see another `CC_<t>` and linker, and build
+/// anew.
 fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
   let me = env::current_exe()?.canonicalize()?;
   let mut key = me.as_os_str().to_owned();
   key.push(sysroot);
+  let path = folder(bin, &key).join(exe(&format!("{}-clang", target.rust)));
+  place(&me, &path)?;
+  Ok(path)
+}
+
+/// The folder for PATH with rustc's dlltool for Windows `target`, which makes import libraries for
+/// the DLLs that `raw-dylib` links name, as windows-sys's do: a link to llvm-ar at `ar`, which runs
+/// as llvm-dlltool by the name rustc looks for, `dlltool.exe` on Windows, `<target>-dlltool`
+/// elsewhere.
+fn dlltool(bin: &Path, target: &Target, ar: &Path) -> io::Result<PathBuf> {
+  let name = if cfg!(windows) { exe("dlltool") } else { format!("{}-dlltool", target.clang) };
+  let dir = folder(bin, ar.as_os_str());
+  place(ar, &dir.join(name))?;
+  Ok(dir)
+}
+
+/// A folder of `bin` that `key` names.
+fn folder(bin: &Path, key: &OsStr) -> PathBuf {
   let hash = packages::hex(&hmac_sha256::Hash::hash(key.as_encoded_bytes()));
-  let dir = bin.join(&hash[..12]);
-  let path = dir.join(exe(&format!("{}-clang", target.rust)));
-  fs::create_dir_all(&dir)?;
-  if runs(&path, &me) {
-    return Ok(path);
+  bin.join(&hash[..12])
+}
+
+/// Makes `path` a link to the program `to`, anew when it is another's.
+fn place(to: &Path, path: &Path) -> io::Result<()> {
+  let dir = path.parent().unwrap_or(Path::new("."));
+  fs::create_dir_all(dir)?;
+  if runs(path, to) {
+    return Ok(());
   }
 
   // Made beside it and renamed over it, so that a build running with the old one never misses it.
-  let part = dir.join(format!(".{}-{}", target.rust, std::process::id()));
+  let name = path.file_stem().unwrap_or_default().to_string_lossy();
+  let part = dir.join(format!(".{name}-{}", std::process::id()));
   let _ = fs::remove_file(&part);
-  link(&me, &part)?;
-  let done = fs::rename(&part, &path);
+  link(to, &part)?;
+  let done = fs::rename(&part, path);
   let _ = fs::remove_file(&part);
   match done {
-    // Windows renames nothing over a program that runs: another run's wrapper, if it is this one.
-    Err(_) if runs(&path, &me) => Ok(path),
+    // Windows renames nothing over a program that runs: another run's link, if it is this one.
+    Err(_) if runs(path, to) => Ok(()),
     Err(e) => Err(e),
-    Ok(()) => Ok(path),
+    Ok(()) => Ok(()),
   }
 }
 
 #[cfg(unix)]
-fn link(me: &Path, path: &Path) -> io::Result<()> {
-  std::os::unix::fs::symlink(me, path)
+fn link(to: &Path, path: &Path) -> io::Result<()> {
+  std::os::unix::fs::symlink(to, path)
 }
 
 /// Windows makes symlinks only for admins: a hard link, or a copy on another volume.
 #[cfg(windows)]
-fn link(me: &Path, path: &Path) -> io::Result<()> {
-  fs::hard_link(me, path).or_else(|_| fs::copy(me, path).map(drop))
+fn link(to: &Path, path: &Path) -> io::Result<()> {
+  fs::hard_link(to, path).or_else(|_| fs::copy(to, path).map(drop))
 }
 
-/// Whether the wrapper at `path` runs the program `me`: links to it, or on Windows has its size
-/// and time, as a hard link or a copy does.
-fn runs(path: &Path, me: &Path) -> bool {
+/// Whether the link at `path` runs the program `to`: links to it, or on Windows has its size and
+/// time, as a hard link or a copy does.
+fn runs(path: &Path, to: &Path) -> bool {
   #[cfg(unix)]
-  return fs::read_link(path).is_ok_and(|x| x == me);
+  return fs::read_link(path).is_ok_and(|x| x == to);
   #[cfg(windows)]
   {
     let meta = |x: &Path| fs::metadata(x).and_then(|x| Ok((x.len(), x.modified()?))).ok();
-    meta(path).is_some_and(|x| meta(me) == Some(x))
+    meta(path).is_some_and(|x| meta(to) == Some(x))
   }
 }
 
@@ -334,6 +416,31 @@ mod tests {
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+  }
+
+  #[test]
+  fn chosen_finds_the_vars_in_args_and_cargo_s_config() {
+    let dir = env::temp_dir().join(format!("cargo-solo-chosen-{}", std::process::id()));
+    let (here, config) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
+    fs::create_dir_all(dir.join("a/.cargo")).unwrap();
+    fs::create_dir_all(&here).unwrap();
+    let vars = ["CARGO_SOLO_TEST_CHOSEN", "CARGO_SOLO_TEST_CHOSEN_x"];
+    let chosen = |line| chosen(&vars, &args(line), &here);
+    assert!(!chosen("build"));
+    assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"));
+    assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_y=0"));
+
+    let comments = "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\nA = 1 # CARGO_SOLO_TEST_CHOSEN\n";
+    fs::write(&config, comments).unwrap();
+    assert!(!chosen("build"));
+
+    fs::write(here.join("my.toml"), "[env]\nCARGO_SOLO_TEST_CHOSEN_x = \"0\"\n").unwrap();
+    assert!(chosen("build --config my.toml"));
+    assert!(chosen("build --config=my.toml"));
+
+    fs::write(&config, r##"env = { A = "\"#", B = '#', CARGO_SOLO_TEST_CHOSEN = "0" }"##).unwrap();
+    assert!(chosen("build"));
+    fs::remove_dir_all(&dir).unwrap();
   }
 
   #[test]
