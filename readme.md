@@ -2,7 +2,7 @@
 
 # cargo-solo
 
-**Cross-compile Rust for Linux and Windows: no Zig, no Docker**
+**Cross-compile Rust with the clang you already have: no Zig, no Docker**
 
 [<img src="https://badges.ws/crates/v/cargo-solo" alt="version" />](https://crates.io/crates/cargo-solo)
 [<img src="https://badges.ws/github/license/vladkens/cargo-solo" alt="license" />](https://github.com/vladkens/cargo-solo/blob/main/LICENSE)

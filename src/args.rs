@@ -58,7 +58,7 @@ pub fn help(cache: &str) -> String {
     TARGETS.iter().map(|x| format!("  {:width$}  {}\n", x.rust, x.libc.version())).collect();
 
   format!(
-    "Cross-compiles Rust for Linux and Windows with clang and rustup's lld: no Zig, no Docker.
+    "Cross-compiles Rust with the host's clang and rustup's lld: no Zig, no Docker.
 
 Usage: cargo solo <cargo command> [args]...
 
