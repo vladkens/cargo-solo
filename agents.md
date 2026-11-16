@@ -2,7 +2,7 @@
 
 A cargo subcommand, `cargo solo`, that cross-compiles Rust, C dependencies included, for Linux (glibc and musl) and Windows (gnu) on a Mac, Linux or Windows, with no Zig, Docker or prebuilt toolchain: the host's clang compiles C and drives the link, rustup's rust-lld links and its llvm-ar archives, and each target's libc and headers come from the distro's own packages, fetched on first use, pinned by SHA-256 and cached. One crate, `cargo-solo`. Agents carry out each change end to end by following this file.
 
-Each fact has one source: what cargo-solo does is `readme.md` and `cargo solo --help`, the packages and their hashes the code's tables, dependencies `Cargo.toml`, checks the `Makefile`, the work under way `docs/plans/`.
+Each fact has one source: what cargo-solo does is `readme.md` and `cargo solo --help`, the packages and their hashes the code's tables, dependencies `Cargo.toml`, checks the `Makefile`, what comes next `docs/roadmap.md`, the work under way `docs/plans/`.
 
 ## Scope
 
@@ -28,9 +28,10 @@ Each fact has one source: what cargo-solo does is `readme.md` and `cargo solo --
 
 ## Workflow
 
+- `docs/roadmap.md` is the person's backlog: change it only when the person asks. Each item is done as a plan and one PR.
 - Keep multi-step work as a checklist in `docs/plans/yyyymmdd-<name>.md`, only ticking it during the work; when done, add `Done: yyyy-mm-dd` on top and a short `## Result`, and move it to `docs/plans/completed/`.
 - Before committing, run `make check` and `make test`. `make prepare` rewrites files: not a check.
 - A commit is one meaningful change a person can check: one short lowercase line, no body, docs updated in the same commit. When fixing your own unpushed commit, amend or fix up that commit instead of adding a separate fix.
 - Ask the person only when what cargo-solo does must change, a dependency is needed, or the request is ambiguous. Otherwise decide and say so in your report.
 - CI runners are `ubuntu-latest`, `macos-latest`, `windows-latest`, never pinned.
-- Keep docs to `readme.md` (users), the rustdoc, `agents.md` and the plans. No progress journals, run logs or disclaimer paragraphs.
+- Keep docs to `readme.md` (users), the rustdoc, `agents.md`, the roadmap and the plans. No progress journals, run logs or disclaimer paragraphs.
