@@ -285,11 +285,7 @@ fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
 /// as llvm-dlltool by the name rustc looks for, `dlltool.exe` on Windows, `<target>-dlltool`
 /// elsewhere.
 fn dlltool(bin: &Path, target: &Target, ar: &Path) -> io::Result<PathBuf> {
-  let name = match cfg!(windows) {
-    true => exe("dlltool"),
-    false => format!("{}-dlltool", target.clang),
-  };
-
+  let name = if cfg!(windows) { exe("dlltool") } else { format!("{}-dlltool", target.clang) };
   let dir = folder(bin, ar.as_os_str());
   place(ar, &dir.join(name))?;
   Ok(dir)
