@@ -13,10 +13,10 @@ The maintainer's backlog, in order: each item is done as a plan in `docs/plans/`
 
 Each of these changes the CLI:
 
-- [ ] **Other glibc versions** by cargo-zigbuild's suffix, `--target x86_64-unknown-linux-gnu.2.31`, cargo given the triple without it: the versions of Debian's releases (2.31 in 11, 2.36 in 12, 2.41 in 13). rust-dist already passes zigbuild `.2.28`.
+- [ ] **Other glibc versions** by cargo-zigbuild's suffix, `--target x86_64-unknown-linux-gnu.2.31`, cargo given the triple without it: the versions of Debian's releases (2.31 in 11, 2.36 in 12, 2.41 in 13). rust-dist already passes zigbuild `.2.28`. Below 2.28 on request: 2.17, for CentOS 7 and manylinux2014, from CentOS 7's RPMs on vault.centos.org, real files as Debian's are, not stubs from symbol lists as Zig's.
 - [ ] **Extra Debian packages in a sysroot,** such as `libasound2-dev` for wavo-app, named in `[package.metadata.solo]`, as cross's `pre-build` installs them with apt. Zig can't do that.
 - [ ] **`cargo solo test` and `run` through a runner:** QEMU for Linux, Wine for Windows, as cross and zijiren233/cargo-cross do. Maybe never: CI runs a target's tests on its own OS.
 
 Later, on request: `aarch64-pc-windows-gnullvm` (rustup ships `rust-mingw` for it), Windows on arm64 as a host, i686, armv7 and riscv64; a smaller mingw sysroot, only the import libraries a link uses; a mirror setting if Debian's archives are slow.
 
-Not planned: Docker; a toolchain of our own, hosted anywhere; `-windows-msvc`, which cargo-xwin covers.
+Not planned: Docker; a toolchain of our own, hosted anywhere, or a libc built from sources as Zig builds its; `-windows-msvc`, which cargo-xwin covers.
