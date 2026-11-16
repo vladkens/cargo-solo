@@ -3,5 +3,6 @@ name = "c-rdkafka"
 version = "0.1.0"
 edition = "2024"
 
+# With curl: librdkafka 2.12's cmake build includes curl.h even without it.
 [dependencies]
-rdkafka = { version = "0.39.0", features = ["cmake-build"] }
+rdkafka = { version = "0.39.0", features = ["cmake-build", "curl-static"] }
