@@ -230,9 +230,11 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
 
 /// A TOML `line` without its comment, from the first `#` outside quotes.
 fn code(line: &str) -> &str {
-  let mut quote = None;
+  let (mut quote, mut escaped) = (None, false);
   for (i, c) in line.char_indices() {
     match (quote, c) {
+      _ if escaped => escaped = false,
+      (Some('"'), '\\') => escaped = true,
       (None, '#') => return &line[..i],
       (None, '"' | '\'') => quote = Some(c),
       (Some(q), _) if c == q => quote = None,
@@ -436,7 +438,7 @@ mod tests {
     assert!(chosen("build --config my.toml"));
     assert!(chosen("build --config=my.toml"));
 
-    fs::write(&config, "env = { A = \"#\", CARGO_SOLO_TEST_CHOSEN = \"0\" }\n").unwrap();
+    fs::write(&config, r##"env = { A = "\"#", B = '#', CARGO_SOLO_TEST_CHOSEN = "0" }"##).unwrap();
     assert!(chosen("build"));
     fs::remove_dir_all(&dir).unwrap();
   }
