@@ -197,31 +197,34 @@ impl Host {
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
-    if !chosen(PREBUILT_NASM, args, &env::current_dir()?) {
-      out.push((format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_")), "1".into()));
+    let nasm = format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_"));
+    if !chosen(&[PREBUILT_NASM, &nasm], args, &env::current_dir()?) {
+      out.push((nasm, "1".into()));
     }
 
     Ok(out)
   }
 }
 
-/// Whether the user set `var`, or a target's `<var>_<target>`, for cargo: in its `args`, its
-/// environment, or a config file it reads, in `.cargo` of `here` and of each folder above, and in
-/// CARGO_HOME. By the name alone, which is all a choice needs.
-fn chosen(var: &str, args: &[OsString], here: &Path) -> bool {
-  if args.iter().any(|x| x.to_string_lossy().contains(var)) {
+/// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside a comment
+/// in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo` of `here`,
+/// of each folder above and of CARGO_HOME. By the name alone, which is all a choice needs.
+fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
+  let named =
+    |x: &str| x.split(|x: char| !x.is_alphanumeric() && x != '_').any(|x| vars.contains(&x));
+  let args: Vec<_> = args.iter().map(|x| x.to_string_lossy()).collect();
+  if vars.iter().any(|x| env::var_os(x).is_some()) || args.iter().any(|x| named(x)) {
     return true;
   }
 
-  if env::vars_os().any(|(k, _)| k.to_string_lossy().starts_with(var)) {
-    return true;
-  }
-
+  let given = args.iter().map(|x| here.join(x.strip_prefix("--config=").unwrap_or(x)));
+  let given = given.filter(|x| x.extension().is_some_and(|x| x == "toml"));
   let home = env::var_os("CARGO_HOME").map(PathBuf::from);
   let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
   let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
-  let files = dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]);
-  files.filter_map(|x| fs::read_to_string(x).ok()).any(|x| x.contains(var))
+  let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
+  let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
+  texts.any(|x| x.lines().any(|x| named(x.split('#').next().unwrap_or_default())))
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -398,17 +401,26 @@ mod tests {
   }
 
   #[test]
-  fn chosen_finds_the_var_in_args_and_cargo_s_config() {
+  fn chosen_finds_the_vars_in_args_and_cargo_s_config() {
     let dir = env::temp_dir().join(format!("cargo-solo-chosen-{}", std::process::id()));
-    let here = dir.join("a/b");
+    let (here, config) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
     fs::create_dir_all(dir.join("a/.cargo")).unwrap();
     fs::create_dir_all(&here).unwrap();
-    let var = "CARGO_SOLO_TEST_CHOSEN";
-    assert!(!chosen(var, &[], &here));
-    assert!(chosen(var, &args("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"), &here));
+    let vars = ["CARGO_SOLO_TEST_CHOSEN", "CARGO_SOLO_TEST_CHOSEN_x"];
+    let chosen = |line| chosen(&vars, &args(line), &here);
+    assert!(!chosen("build"));
+    assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"));
+    assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_y=0"));
 
-    fs::write(dir.join("a/.cargo/config.toml"), format!("[env]\n{var}_x = \"0\"\n")).unwrap();
-    assert!(chosen(var, &[], &here));
+    fs::write(&config, "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\n").unwrap();
+    assert!(!chosen("build"));
+
+    fs::write(here.join("my.toml"), "[env]\nCARGO_SOLO_TEST_CHOSEN_x = \"0\"\n").unwrap();
+    assert!(chosen("build --config my.toml"));
+    assert!(chosen("build --config=my.toml"));
+
+    fs::write(&config, "[env]\nCARGO_SOLO_TEST_CHOSEN = \"0\" # off\n").unwrap();
+    assert!(chosen("build"));
     fs::remove_dir_all(&dir).unwrap();
   }
 
