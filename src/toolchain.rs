@@ -16,6 +16,9 @@ const CLANG: &str = "CARGO_SOLO_CLANG";
 /// The folder of rustup's `ld.lld`, which runs rust-lld as GNU ld, for clang's `-B`; set by
 /// cargo-solo.
 const GCC_LD: &str = "CARGO_SOLO_GCC_LD";
+/// aws-lc-sys, rustls' crypto, assembles x86_64 Windows' code with nasm, which a host seldom has;
+/// this lets it take the objects it ships instead, when there's no nasm.
+const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
 
 // MARK: Targets
 
@@ -76,14 +79,22 @@ impl Target {
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
   /// linker, which rustc takes for a C compiler driving the link by its name, `*-clang`; llvm-ar at
-  /// `ar` its archiver.
-  pub fn env(&self, cc: &Path, ar: &Path) -> [(String, OsString); 3] {
+  /// `ar` its archiver; for Windows, aws-lc-sys's NASM objects, unless the user chose.
+  pub fn env(&self, cc: &Path, ar: &Path) -> Vec<(String, OsString)> {
     let upper = self.rust.to_uppercase().replace('-', "_");
-    [
+    let mut out = vec![
       (format!("CC_{}", self.rust), cc.into()),
       (format!("AR_{}", self.rust), ar.into()),
       (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
-    ]
+    ];
+
+    let nasm = format!("{PREBUILT_NASM}_{}", self.rust.replace('-', "_"));
+    let chosen = [PREBUILT_NASM, &nasm].iter().any(|x| env::var_os(x).is_some());
+    if self.libc == Libc::Mingw && !chosen {
+      out.push((nasm, "1".into()));
+    }
+
+    out
   }
 
   /// The flags the wrapper puts after clang's `args`, so that they win over the `--target` cc-rs
@@ -175,7 +186,7 @@ impl Host {
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
   /// gives the environment cargo runs with for it.
-  pub fn setup(&self, target: &Target) -> io::Result<[(String, OsString); 3]> {
+  pub fn setup(&self, target: &Target) -> io::Result<Vec<(String, OsString)>> {
     if !self.sysroot.join("lib/rustlib").join(target.rust).join("lib").is_dir() {
       rustup(&self.sysroot, &["target", "add", target.rust])?;
     }
@@ -329,11 +340,16 @@ mod tests {
 
   #[test]
   fn env_sets_the_compiler_linker_and_archiver() {
-    let target = Target::find("aarch64-unknown-linux-musl").unwrap();
-    let [cc, ar, linker] = target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
-    assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
-    assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
-    assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+    let env = |name| Target::find(name).unwrap().env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
+    let musl = env("aarch64-unknown-linux-musl");
+    assert_eq!(musl[0], ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
+    assert_eq!(musl[1], ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
+    let linker = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
+    assert_eq!(musl[2], (linker.into(), "/c/cc".into()));
+    assert_eq!(musl.len(), 3);
+
+    let nasm = ("AWS_LC_SYS_PREBUILT_NASM_x86_64_pc_windows_gnu".into(), "1".into());
+    assert_eq!(env("x86_64-pc-windows-gnu")[3..], [nasm]);
   }
 
   #[test]

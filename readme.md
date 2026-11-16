@@ -15,7 +15,7 @@
 ## 🌟 Features
 
 - 🎯 **Linux glibc and musl, x86_64 and aarch64, and Windows**, from any of macOS, Linux and Windows
-- 🧱 **C dependencies through `cc`**, such as `ring`, with no setup
+- 🧱 **C dependencies through `cc`**, such as `ring` and `aws-lc-rs`, rustls' crypto, with no setup
 - 🐧 **glibc 2.28**: the binary runs on Debian 10, RHEL 8 and anything newer
 - 🪶 **2 to 16 MB per target**, fetched once: no Zig, no Docker image, no toolchain of ours
 - 🔐 **Nothing of ours hosted**: every file is Debian's or rustup's, pinned by SHA-256

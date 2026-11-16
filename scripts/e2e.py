@@ -31,7 +31,8 @@ GLIBC = (2, 28)
 SYSTEM_DLL = re.compile(
     r"(?i)^(kernel32|msvcrt|ntdll|userenv|ws2_32|bcryptprimitives|api-ms-win-.+)\.dll$"
 )
-EXPECTED = f"hello 10 {hashlib.sha256(b'cargo-solo').hexdigest()[:16]}"
+SHA = hashlib.sha256(b"cargo-solo").hexdigest()[:16]
+EXPECTED = f"hello 10 {SHA} {SHA}"  # ring's and aws-lc's
 
 
 def log(msg: str) -> None:
