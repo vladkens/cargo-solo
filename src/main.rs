@@ -55,7 +55,6 @@ fn start() -> io::Result<()> {
   Err(exec(cargo))
 }
 
-/// An error with `msg`.
 pub fn bad(msg: impl Into<String>) -> io::Error {
   io::Error::other(msg.into())
 }

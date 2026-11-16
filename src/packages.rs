@@ -6,7 +6,7 @@
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, io};
 
 use tar::EntryType;
@@ -75,23 +75,25 @@ const TRIXIE: &[&str] =
 
 const RUSTUP: &[&str] = &["https://static.rust-lang.org"];
 
-const fn deb(
-  mirrors: &'static [&'static str],
-  path: &'static str,
-  sha256: &'static str,
-) -> Package {
-  Package { mirrors, path, sha256, root: "", keep: DEB_KEEP, into: "" }
+impl Package {
+  const fn deb(
+    mirrors: &'static [&'static str],
+    path: &'static str,
+    sha256: &'static str,
+  ) -> Package {
+    Package { mirrors, path, sha256, root: "", keep: DEB_KEEP, into: "" }
+  }
 }
 
 /// The kernel's headers, Linux 4.19's, for x86_64: glibc's and musl's.
-const LINUX_X64: Package = deb(
+const LINUX_X64: Package = Package::deb(
   BUSTER,
   "pool/main/l/linux/linux-libc-dev_4.19.249-2_amd64.deb",
   "c512f30f5abe413464b79ed23b54958df8cc104446c3ae93d83d28e23728a571",
 );
 
 /// [LINUX_X64] for aarch64.
-const LINUX_ARM64: Package = deb(
+const LINUX_ARM64: Package = Package::deb(
   BUSTER,
   "pool/main/l/linux/linux-libc-dev_4.19.249-2_arm64.deb",
   "e9a92d71d62655f673433c345a03fecaa4292f93c6572b28fd3d16dcfd1cc7f6",
@@ -99,23 +101,23 @@ const LINUX_ARM64: Package = deb(
 
 /// glibc 2.28 for x86_64: libc, the kernel's headers, and GCC's crtbegin.o, libgcc and libgcc_s.
 pub const GLIBC_X64: &[Package] = &[
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/glibc/libc6_2.28-10+deb10u1_amd64.deb",
     "0ee0f0bfcd7b59ffda1dbc76ef58fa79512913204f2a336206467bfbf45bc69f",
   ),
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/glibc/libc6-dev_2.28-10+deb10u1_amd64.deb",
     "76b8413920d91a9a4289f99839933d0d30095e0ec12b05bb4f1a7f27e5ef4a55",
   ),
   LINUX_X64,
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_amd64.deb",
     "a52d5216858c7185bc245e52ad95a6ad515d087bc25e8556df06c5626b41a837",
   ),
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc1_8.3.0-6_amd64.deb",
     "b1bb7611f3372732889d502cb1d09fe572b5fbb5288a4a8b1ed0363fecc3555a",
@@ -124,23 +126,23 @@ pub const GLIBC_X64: &[Package] = &[
 
 /// [GLIBC_X64] for aarch64.
 pub const GLIBC_ARM64: &[Package] = &[
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/glibc/libc6_2.28-10+deb10u1_arm64.deb",
     "09f5e92b1527cdc06b757499bb4d97ddf1b064fc3d163f978e5de18b131cd330",
   ),
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/glibc/libc6-dev_2.28-10+deb10u1_arm64.deb",
     "04097716018288cef8b82339faa1a9847838b89f39574b5b169f4657da8bf269",
   ),
   LINUX_ARM64,
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_arm64.deb",
     "d8385c0106d4ac559ada75b162aecb9d507a67da3ac8742eb32258f501d07c7e",
   ),
-  deb(
+  Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc1_8.3.0-6_arm64.deb",
     "2851ac25d12958586c035de5ec4f2fc17272dec48f776dd0dd24c62f62674fd9",
@@ -150,7 +152,7 @@ pub const GLIBC_ARM64: &[Package] = &[
 /// musl's headers for x86_64, and the kernel's: Rust ships its libc.a and crt objects
 /// (`self-contained`), and of the musl it bundles, 1.2.5, Debian's is trixie's.
 pub const MUSL_X64: &[Package] = &[
-  deb(
+  Package::deb(
     TRIXIE,
     "pool/main/m/musl/musl-dev_1.2.5-3.1~deb13u1_amd64.deb",
     "a3f7d47e452129bb65aae201d6c115abf4d5d3efb136b38b7c6b4fa03ec065e9",
@@ -160,7 +162,7 @@ pub const MUSL_X64: &[Package] = &[
 
 /// [MUSL_X64] for aarch64.
 pub const MUSL_ARM64: &[Package] = &[
-  deb(
+  Package::deb(
     TRIXIE,
     "pool/main/m/musl/musl-dev_1.2.5-3.1~deb13u1_arm64.deb",
     "384ea029e3694baac696d3993d93246f9a4b3741c493697e1ceb7256d8820748",
@@ -172,12 +174,12 @@ pub const MUSL_ARM64: &[Package] = &[
 /// libgcc, which Debian has only in its 38 MB cross GCC, from rustup's rust-mingw: what rustc links
 /// windows-gnu with on a Windows host.
 pub const MINGW_X64: &[Package] = &[
-  deb(
+  Package::deb(
     TRIXIE,
     "pool/main/m/mingw-w64/mingw-w64-common_12.0.0-5_all.deb",
     "97dce5d0d8aff1cade4786ad4ef5078345477a598829afcac2e7f2fbc5399990",
   ),
-  deb(
+  Package::deb(
     TRIXIE,
     "pool/main/m/mingw-w64/mingw-w64-x86-64-dev_12.0.0-5_all.deb",
     "0bf89cf7454cccb49cd2a46a6f7b33896f6ae3a1a2fe33e02c40be6155bbb385",
@@ -237,8 +239,9 @@ pub fn ensure(cache: &Path, name: &str, packages: &[Package]) -> io::Result<Path
   fs::create_dir_all(&tmp)?;
   sweep(&tmp);
 
-  let part = tmp.join(format!("{}-{}", name, std::process::id()));
-  let _ = fs::remove_dir_all(&part);
+  // The time too: runs in containers that share the cache have the same ids.
+  let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+  let part = tmp.join(format!("{name}-{}-{now}", std::process::id()));
   eprintln!("cargo-solo: fetching {name}'s sysroot into {}", dir.display());
   let done = fill(&part, packages).and_then(|()| fs::rename(&part, &dir));
   let _ = fs::remove_dir_all(&part);
@@ -283,14 +286,15 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
 // MARK: Fetch
 
 /// The file of `pkg`, downloaded by `curl` into `path` from each mirror in turn until one has the
-/// pinned SHA-256. A stalled connection fails, and each mirror is tried three times.
+/// pinned SHA-256. A stalled connection fails, and a transient error is retried twice; curl's
+/// `--retry-all-errors` is newer than Debian 10's and RHEL 8's.
 fn fetch(pkg: &Package, path: &Path) -> io::Result<Vec<u8>> {
   let mut failed = vec![];
   for mirror in pkg.mirrors {
     let url = format!("{mirror}/{}", pkg.path);
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60"]);
-    curl.args(["--retry", "2", "--retry-all-errors", "-o"]).arg(path).arg(&url);
+    curl.args(["--retry", "2", "-o"]).arg(path).arg(&url);
     let got = run(&mut curl).and_then(|_| fs::read(path));
     let _ = fs::remove_file(path);
     match got {
@@ -416,10 +420,10 @@ fn resolve(link: &Path, to: &Path) -> Option<PathBuf> {
   Some(out)
 }
 
-/// Puts at each of `links` in `root` a hard link to what it points at, or a copy where the file
-/// system has none, and a folder of those for a folder: Windows makes symlinks only for admins, and
-/// Debian's absolute ones would point into the host. A link to a link waits for that one; one to
-/// what no package here holds (as libgcc-8-dev's libasan.so) is left out.
+/// Puts at each of `links` in `root` a hard link to the file it points at, or a copy where the file
+/// system has none: Windows makes symlinks only for admins, and Debian's absolute ones would point
+/// into the host. A link to a link waits for that one; one to what no package here holds (as
+/// libgcc-8-dev's libasan.so) is left out.
 fn materialize(root: &Path, mut links: Vec<(PathBuf, PathBuf)>) -> io::Result<()> {
   loop {
     let count = links.len();
@@ -427,10 +431,9 @@ fn materialize(root: &Path, mut links: Vec<(PathBuf, PathBuf)>) -> io::Result<()
     for (link, to) in links {
       let (src, dst) = (root.join(&to), root.join(&link));
       match fs::metadata(&src) {
-        // A folder linked into itself would never end.
-        Ok(x) if x.is_dir() && !dst.starts_with(&src) => tree(&src, &dst)?,
-        Ok(x) if x.is_file() => same(&src, &dst)?,
-        Ok(_) => {}
+        // No package here has one: a pin that brings one fails here, not in a build.
+        Ok(x) if x.is_dir() => return Err(bad(format!("{}: a link to a folder", link.display()))),
+        Ok(_) => copy(&src, &dst)?,
         Err(_) => left.push((link, to)),
       }
     }
@@ -444,7 +447,7 @@ fn materialize(root: &Path, mut links: Vec<(PathBuf, PathBuf)>) -> io::Result<()
 }
 
 /// A hard link at `dst` to the file `src`, or a copy; a file already at `dst` stays.
-fn same(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy(src: &Path, dst: &Path) -> io::Result<()> {
   if let Some(dir) = dst.parent() {
     fs::create_dir_all(dir)?;
   }
@@ -454,20 +457,6 @@ fn same(src: &Path, dst: &Path) -> io::Result<()> {
   }
 
   fs::hard_link(src, dst).or_else(|_| fs::copy(src, dst).map(drop))
-}
-
-/// [same] for each file under the folder `src`, at its place under `dst`.
-fn tree(src: &Path, dst: &Path) -> io::Result<()> {
-  for entry in fs::read_dir(src)? {
-    let entry = entry?;
-    let (from, to) = (entry.path(), dst.join(entry.file_name()));
-    match entry.file_type()?.is_dir() {
-      true => tree(&from, &to)?,
-      false => same(&from, &to)?,
-    }
-  }
-
-  Ok(())
 }
 
 #[cfg(test)]
@@ -481,10 +470,6 @@ mod tests {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
-  }
-
-  fn leak<T: ?Sized>(x: Box<T>) -> &'static T {
-    Box::leak(x)
   }
 
   /// An ar archive of `members`, as `ar` writes it.
@@ -524,8 +509,7 @@ mod tests {
 
   #[test]
   fn tables_are_pinned() {
-    let all = [GLIBC_X64, GLIBC_ARM64, MUSL_X64, MUSL_ARM64, MINGW_X64];
-    for pkg in all.iter().flat_map(|x| x.iter()) {
+    for pkg in TARGETS.iter().flat_map(|x| x.packages) {
       let hex = pkg.sha256.bytes().all(|x| x.is_ascii_digit() || (b'a'..=b'f').contains(&x));
       assert!(pkg.sha256.len() == 64 && hex, "{}", pkg.path);
       assert!(pkg.path.ends_with(".deb") || pkg.path.ends_with(".tar.xz"), "{}", pkg.path);
@@ -542,7 +526,7 @@ mod tests {
 
   #[test]
   fn dir_changes_with_the_packages() {
-    let pkg = |sha256| [deb(BUSTER, "a.deb", sha256)];
+    let pkg = |sha256| [Package::deb(BUSTER, "a.deb", sha256)];
     let (a, b) = (pkg("aa"), pkg("bb"));
     let cache = Path::new("/c");
     assert_eq!(dir(cache, "x", &a), dir(cache, "x", &a));
@@ -564,7 +548,7 @@ mod tests {
 
   #[test]
   fn place_keeps_headers_and_libraries() {
-    let pkg = deb(BUSTER, "a.deb", "");
+    let pkg = Package::deb(BUSTER, "a.deb", "");
     let place = |x: &str| place(Path::new(x), &pkg).unwrap();
     assert_eq!(place("./usr/include/stdio.h"), Some(PathBuf::from("usr/include/stdio.h")));
     assert_eq!(
@@ -601,23 +585,21 @@ mod tests {
       ("./lib/x/libc-2.28.so", "libc"),
       ("./usr/include/asm-generic/a.h", "a"),
       ("./usr/share/doc/libc6/copyright", "doc"),
-      ("./usr/lib/x/sub/b.h", "b"),
     ];
     let links = [
-      // Absolute, as Debian's are, relative, a link to a link, a hard link, a folder.
+      // Absolute, as Debian's are, relative, a link to a link, a hard link.
       ("./usr/lib/x/libc.so.6", "/lib/x/libc.so.6", false),
       ("./lib/x/libc.so.6", "libc-2.28.so", false),
       ("./usr/include/x/asm/a.h", "../../asm-generic/a.h", false),
       ("./lib/x/libc.hard", "./lib/x/libc-2.28.so", true),
-      ("./usr/lib/x/dir", "sub", false),
       // To a file no package has, out of the sysroot, to a file not kept.
       ("./usr/lib/x/libasan.so", "../../../x86_64-linux-gnu/libasan.so.5", false),
       ("./usr/lib/x/out", "../../../../etc/passwd", false),
       ("./usr/lib/x/doc", "/usr/share/doc/libc6/copyright", false),
     ];
-    let pkg = deb(BUSTER, "a.deb", "");
+    let pkg = Package::deb(BUSTER, "a.deb", "");
     let got = unpack(&tarball(&files, &links), &pkg, &root).unwrap();
-    assert_eq!(got.len(), 7);
+    assert_eq!(got.len(), 6);
     materialize(&root, got).unwrap();
 
     let read = |x: &str| fs::read_to_string(root.join(x)).ok();
@@ -626,13 +608,16 @@ mod tests {
     assert_eq!(read("usr/lib/x/libc.so.6").as_deref(), Some("libc"));
     assert_eq!(read("lib/x/libc.hard").as_deref(), Some("libc"));
     assert_eq!(read("usr/include/x/asm/a.h").as_deref(), Some("a"));
-    assert_eq!(read("usr/lib/x/dir/b.h").as_deref(), Some("b"));
     for x in ["usr/share/doc", "usr/lib/x/libasan.so", "usr/lib/x/out", "usr/lib/x/doc"] {
       assert!(!root.join(x).exists(), "{x}");
     }
 
     let link = fs::symlink_metadata(root.join("lib/x/libc.so.6")).unwrap();
     assert!(link.is_file());
+
+    let tar = tarball(&[("./usr/lib/x/sub/b.h", "b")], &[("./usr/lib/x/dir", "sub", false)]);
+    let got = unpack(&tar, &pkg, &root).unwrap();
+    assert!(materialize(&root, got).unwrap_err().to_string().contains("a link to a folder"));
     fs::remove_dir_all(root).unwrap();
   }
 
@@ -646,12 +631,11 @@ mod tests {
     fs::create_dir_all(root.join("good/pool")).unwrap();
     fs::write(root.join("good/pool/a.deb"), &file).unwrap();
 
-    let sha256 = leak(hex(&hmac_sha256::Hash::hash(&file)).into_boxed_str());
-    let good = leak(format!("file://{}", root.join("good").display()).into_boxed_str());
-    let none = leak(format!("file://{}", root.join("none").display()).into_boxed_str());
-    let mirrors = leak(vec![none, good].into_boxed_slice());
+    let sha256: &str = hex(&hmac_sha256::Hash::hash(&file)).leak();
+    let good: &str = format!("file://{}", root.join("good").display()).leak();
+    let none: &str = format!("file://{}", root.join("none").display()).leak();
     let cache = root.join("cache");
-    let pkgs = [deb(mirrors, "pool/a.deb", sha256)];
+    let pkgs = [Package::deb(vec![none, good].leak(), "pool/a.deb", sha256)];
     let dir = ensure(&cache, "x", &pkgs).unwrap();
     assert_eq!(fs::read_to_string(dir.join("usr/include/a.h")).unwrap(), "a");
     assert_eq!(fs::read_dir(cache.join("tmp")).unwrap().count(), 0);
@@ -659,7 +643,7 @@ mod tests {
     fs::remove_file(root.join("good/pool/a.deb")).unwrap();
     assert_eq!(ensure(&cache, "x", &pkgs).unwrap(), dir);
 
-    let wrong = [deb(leak(vec![good].into_boxed_slice()), "pool/a.deb", "00")];
+    let wrong = [Package::deb(vec![good].leak(), "pool/a.deb", "00")];
     fs::write(root.join("good/pool/a.deb"), &file).unwrap();
     let err = ensure(&cache, "y", &wrong).unwrap_err().to_string();
     assert!(err.contains("a.deb: ") && err.contains(&format!("SHA-256 {sha256}, pinned 00")));
@@ -671,10 +655,9 @@ mod tests {
   #[ignore = "downloads every package from every mirror, ~120 MB"]
   fn every_package_is_on_every_mirror() {
     let root = temp("mirrors");
-    let all = [GLIBC_X64, GLIBC_ARM64, MUSL_X64, MUSL_ARM64, MINGW_X64];
-    for pkg in all.iter().flat_map(|x| x.iter()) {
+    for pkg in TARGETS.iter().flat_map(|x| x.packages) {
       for mirror in pkg.mirrors {
-        let one = Package { mirrors: leak(vec![*mirror].into_boxed_slice()), ..*pkg };
+        let one = Package { mirrors: vec![*mirror].leak(), ..*pkg };
         fetch(&one, &root.join("file")).unwrap();
       }
     }

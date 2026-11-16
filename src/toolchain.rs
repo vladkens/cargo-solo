@@ -22,7 +22,6 @@ const GCC_LD: &str = "CARGO_SOLO_GCC_LD";
 /// A target cargo-solo sets up.
 #[derive(Debug)]
 pub struct Target {
-  /// Rust's name.
   pub rust: &'static str,
   /// clang's `--target`, Debian's multiarch name for it, and its sysroot's folder name.
   pub clang: &'static str,
@@ -120,7 +119,6 @@ impl Target {
   }
 }
 
-/// `flag` with `path` right after it.
 fn cat(flag: &str, path: &Path) -> OsString {
   let mut out = OsString::from(flag);
   out.push(path);
@@ -182,8 +180,8 @@ impl Host {
       rustup(&self.sysroot, &["target", "add", target.rust])?;
     }
 
-    packages::ensure(&self.cache, target.clang, target.packages)?;
-    let cc = wrapper(&self.cache.join("bin"), target)?;
+    let sysroot = packages::ensure(&self.cache, target.clang, target.packages)?;
+    let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
     Ok(target.env(&cc, &self.bin.join(exe("llvm-ar"))))
   }
 }
@@ -231,16 +229,19 @@ fn rustup(sysroot: &Path, args: &[&str]) -> io::Result<()> {
 
 // MARK: Wrapper
 
-/// The wrapper for `target`, `<target>-clang`: a link to this program in a folder of `bin` its path
-/// names, so that a build never runs another cargo-solo, with other tables; made anew when it is
-/// another's.
-fn wrapper(bin: &Path, target: &Target) -> io::Result<PathBuf> {
+/// The wrapper for `target`, `<target>-clang`: a link to this program in a folder of `bin` that its
+/// path and the target's `sysroot` name, made anew when it is another's. So a build never runs
+/// another cargo-solo, with other tables, and when the sysroot changes, cargo and cc-rs see another
+/// `CC_<t>` and linker, and build anew.
+fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
   let me = env::current_exe()?.canonicalize()?;
-  let hash = packages::hex(&hmac_sha256::Hash::hash(me.as_os_str().as_encoded_bytes()));
+  let mut key = me.as_os_str().to_owned();
+  key.push(sysroot);
+  let hash = packages::hex(&hmac_sha256::Hash::hash(key.as_encoded_bytes()));
   let dir = bin.join(&hash[..12]);
   let path = dir.join(exe(&format!("{}-clang", target.rust)));
   fs::create_dir_all(&dir)?;
-  if is(&path, &me) {
+  if runs(&path, &me) {
     return Ok(path);
   }
 
@@ -252,7 +253,7 @@ fn wrapper(bin: &Path, target: &Target) -> io::Result<PathBuf> {
   let _ = fs::remove_file(&part);
   match done {
     // Windows renames nothing over a program that runs: another run's wrapper, if it is this one.
-    Err(_) if is(&path, &me) => Ok(path),
+    Err(_) if runs(&path, &me) => Ok(path),
     Err(e) => Err(e),
     Ok(()) => Ok(path),
   }
@@ -271,7 +272,7 @@ fn link(me: &Path, path: &Path) -> io::Result<()> {
 
 /// Whether the wrapper at `path` runs the program `me`: links to it, or on Windows has its size
 /// and time, as a hard link or a copy does.
-fn is(path: &Path, me: &Path) -> bool {
+fn runs(path: &Path, me: &Path) -> bool {
   #[cfg(unix)]
   return fs::read_link(path).is_ok_and(|x| x == me);
   #[cfg(windows)]
