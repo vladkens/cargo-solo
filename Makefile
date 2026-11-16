@@ -1,17 +1,22 @@
-.PHONY: prepare check test build update clean
+.PHONY: prepare check test e2e build update clean
 
 prepare:
 	cargo +nightly fmt
+	cargo +nightly fmt --manifest-path tests/hello/Cargo.toml
 	uv run scripts/blank-lines.py --fix
 	cargo clippy --all-targets --fix --allow-dirty --allow-staged
 
 check:
 	cargo +nightly fmt --check
+	cargo +nightly fmt --check --manifest-path tests/hello/Cargo.toml
 	uv run scripts/blank-lines.py
 	cargo clippy --all-targets -- -D warnings
 
 test:
 	cargo test
+
+e2e:
+	uv run scripts/e2e.py all target/e2e
 
 build:
 	cargo build --release
