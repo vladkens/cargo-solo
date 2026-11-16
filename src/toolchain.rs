@@ -572,7 +572,8 @@ impl Host {
       let (ar, nm) = (self.bin.join(exe("llvm-ar")), self.bin.join(exe("llvm-nm")));
       // The host's ranlib, as macOS's, can't read the target's objects.
       let ranlib = tools.join(exe(&format!("{}-ranlib", target.rust)));
-      let tools = [
+      let name_tool = tools.join(exe(&format!("{}-install_name_tool", target.rust)));
+      let mut tools = vec![
         ("C_COMPILER", cc),
         ("CXX_COMPILER", cxx),
         ("ASM_COMPILER", cc),
@@ -580,6 +581,9 @@ impl Host {
         ("RANLIB", &ranlib),
         ("NM", &nm),
       ];
+      if target.libc == Libc::Darwin {
+        tools.push(("INSTALL_NAME_TOOL", &name_tool));
+      }
 
       let text = target.cmake(sysroot, &tools, &self.triple);
       let bin = self.cache.join("bin");
@@ -708,17 +712,22 @@ fn wrapper(bin: &Path, target: &Target, dirs: [&Path; 2]) -> io::Result<[PathBuf
 /// own, such as macOS's ar, can't read the target's objects. They are links to rustup's tools in
 /// `llvm`: llvm-ar, which runs as ranlib by that name, and llvm-nm. For Windows, also rustc's
 /// dlltool, which makes import libraries for the DLLs that `raw-dylib` links name, as
-/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere.
+/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere. For Apple,
+/// llvm-objcopy as `<target>-install_name_tool`, which it runs as by that name, for cmake, which
+/// stops without one.
 fn tools(bin: &Path, target: &Target, llvm: &Path) -> io::Result<PathBuf> {
   let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+  let objcopy = llvm.join(exe("llvm-objcopy"));
   let tools = [("ar", &ar), ("ranlib", &ar), ("nm", &nm)];
   let triples = [target.rust, target.clang];
   let mut names: Vec<_> =
     triples.iter().flat_map(|t| tools.map(|(x, to)| (to, format!("{t}-{x}")))).collect();
 
-  if target.libc == Libc::Mingw {
-    let name = if cfg!(windows) { "dlltool".into() } else { format!("{}-dlltool", target.clang) };
-    names.push((&ar, name));
+  match target.libc {
+    Libc::Mingw if cfg!(windows) => names.push((&ar, "dlltool".into())),
+    Libc::Mingw => names.push((&ar, format!("{}-dlltool", target.clang))),
+    Libc::Darwin => names.push((&objcopy, format!("{}-install_name_tool", target.rust))),
+    _ => {}
   }
 
   let dir = folder(bin, llvm.as_os_str());
@@ -893,8 +902,10 @@ mod tests {
     let llvm = dir.join("llvm");
     fs::create_dir_all(&llvm).unwrap();
     let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+    let objcopy = llvm.join(exe("llvm-objcopy"));
     fs::write(&ar, "ar").unwrap();
     fs::write(&nm, "nm").unwrap();
+    fs::write(&objcopy, "objcopy").unwrap();
 
     let musl = tools(&dir, Target::find("x86_64-unknown-linux-musl").unwrap(), &llvm).unwrap();
     for (to, name) in [(&ar, "x86_64-unknown-linux-musl-ar"), (&ar, "x86_64-linux-musl-ranlib")] {
@@ -909,6 +920,11 @@ mod tests {
     assert_eq!(mingw, musl);
     assert!(runs(&mingw.join(exe(dlltool)), &ar));
     assert!(runs(&mingw.join(exe("x86_64-w64-mingw32-ar")), &ar));
+    assert!(!mingw.join(exe("aarch64-apple-darwin-install_name_tool")).exists());
+
+    let apple = TARGETS.iter().find(|x| x.rust == "aarch64-apple-darwin").unwrap();
+    let apple = tools(&dir, apple, &llvm).unwrap();
+    assert!(runs(&apple.join(exe("aarch64-apple-darwin-install_name_tool")), &objcopy));
     fs::remove_dir_all(&dir).unwrap();
   }
 
