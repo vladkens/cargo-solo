@@ -14,26 +14,7 @@
 
 ## 🤔 Why
 
-`rustup target add` gives you Rust's std for another OS, but no C compiler, linker or libc for it, and nearly every real project needs them: rustls' crypto (`ring`, `aws-lc-rs`), bundled SQLite and zstd are C, built by `cc`. The usual ways to get them:
-
-- **A runner per OS**: a job per target, and the binary needs the runner's glibc. `ubuntu-latest` has 2.43, and a binary built on 2.34 or newer doesn't start on RHEL 8 or Debian 11.
-- **[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)**: Zig, a second compiler with its own libc, a 55 to 100 MB download. Its glibc is stubs, which [don't always behave as the real one](https://github.com/rust-cross/cargo-zigbuild#specify-glibc-version).
-- **[cross](https://github.com/cross-rs/cross)**: Docker or Podman and an image per target. On a Mac that's a Linux VM, and the images are x86_64 only, emulated on Apple silicon. Their glibc is Ubuntu 24.04's, 2.39.
-- **A distro's cross GCC**, such as `gcc-aarch64-linux-gnu`: Linux only, the distro's glibc, and `CC_<target>` and the linker set by hand.
-
-cargo-solo takes what you already have, your clang and rustup's lld, and adds only the target's libc from Debian's own packages: 2 to 16 MB per target, and glibc 2.28 the real one, Debian 10's. No VM, no second compiler, and no toolchain on someone's server that can go away: every file is Debian's or rustup's, pinned by SHA-256.
-
-| | **cargo-solo** | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | [cross](https://github.com/cross-rs/cross) |
-|---|---|---|---|
-| Needs | clang, rustup | Zig | Docker or Podman |
-| Fetches | 2 to 16 MB a target | Zig, 55 to 100 MB | an image a target |
-| glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
-| musl, Windows gnu | ✅ | ✅ | ✅ |
-| On Apple silicon | native | native | x86_64, emulated |
-| Apple targets | ➖ on a Mac, by cargo | ✅ | ➖ your own image |
-| C++, cmake | ❌ not yet | ✅ | ✅ |
-
-Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), Apple targets from Linux or Windows (cargo-zigbuild), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
+`rustup target add` gives you Rust's std for another OS, but no C compiler, linker or libc for it, and nearly every project needs them: rustls' crypto, bundled SQLite and zstd are C. So cross-compiling takes Zig (cargo-zigbuild), Docker (cross), or a runner per OS, whose binary needs that runner's new glibc. cargo-solo needs none of them: your clang, rustup's lld and a few MB of Debian's own packages per target. [How it compares](#-compared).
 
 ## 🌟 Features
 
@@ -106,6 +87,27 @@ jobs:
       - run: cargo install --locked cargo-solo
       - run: cargo solo build --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-musl --target x86_64-pc-windows-gnu
 ```
+
+## 🆚 Compared
+
+The usual ways to cross-compile, and what each costs:
+
+- **A runner per OS**: a job per target, and the binary needs the runner's glibc. `ubuntu-latest` has 2.43, and a binary built on 2.34 or newer doesn't start on RHEL 8 or Debian 11.
+- **[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)**: Zig, a second compiler with its own libc, a 55 to 100 MB download. Its glibc is stubs, which [don't always behave as the real one](https://github.com/rust-cross/cargo-zigbuild#specify-glibc-version).
+- **[cross](https://github.com/cross-rs/cross)**: Docker or Podman and an image per target. On a Mac that's a Linux VM, and the images are x86_64 only, emulated on Apple silicon. Their glibc is Ubuntu 24.04's, 2.39.
+- **A distro's cross GCC**, such as `gcc-aarch64-linux-gnu`: Linux only, the distro's glibc, and `CC_<target>` and the linker set by hand.
+
+| | **cargo-solo** | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | [cross](https://github.com/cross-rs/cross) |
+|---|---|---|---|
+| Needs | clang, rustup | Zig | Docker or Podman |
+| Fetches | 2 to 16 MB a target | Zig, 55 to 100 MB | an image a target |
+| glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
+| musl, Windows gnu | ✅ | ✅ | ✅ |
+| On Apple silicon | native | native | x86_64, emulated |
+| Apple targets | ➖ on a Mac, by cargo | ✅ | ➖ your own image |
+| C++, cmake | ❌ not yet | ✅ | ✅ |
+
+Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), Apple targets from Linux or Windows (cargo-zigbuild), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
 ## 🗺️ Roadmap
 
