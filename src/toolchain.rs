@@ -206,9 +206,10 @@ impl Host {
   }
 }
 
-/// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside a comment
-/// in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo` of `here`,
-/// of each folder above and of CARGO_HOME. By the name alone, which is all a choice needs.
+/// Whether the user set one of `vars` for cargo: in its environment or `args`, or on a line that is
+/// no comment in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo`
+/// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
+/// needs.
 fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
   let named =
     |x: &str| x.split(|x: char| !x.is_alphanumeric() && x != '_').any(|x| vars.contains(&x));
@@ -224,7 +225,7 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
   let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
   let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
   let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
-  texts.any(|x| x.lines().any(|x| named(x.split('#').next().unwrap_or_default())))
+  texts.any(|x| x.lines().any(|x| !x.trim_start().starts_with('#') && named(x)))
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -419,7 +420,7 @@ mod tests {
     assert!(chosen("build --config my.toml"));
     assert!(chosen("build --config=my.toml"));
 
-    fs::write(&config, "[env]\nCARGO_SOLO_TEST_CHOSEN = \"0\" # off\n").unwrap();
+    fs::write(&config, "env = { A = \"#\", CARGO_SOLO_TEST_CHOSEN = \"0\" }\n").unwrap();
     assert!(chosen("build"));
     fs::remove_dir_all(&dir).unwrap();
   }
