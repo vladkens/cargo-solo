@@ -101,6 +101,16 @@ impl Package {
       into,
     }
   }
+
+  /// The package with only what its folder `root` has of `keep`, put in the sysroot's `into`.
+  const fn only(
+    self,
+    root: &'static str,
+    keep: &'static [&'static str],
+    into: &'static str,
+  ) -> Package {
+    Package { root, keep, into, ..self }
+  }
 }
 
 /// The kernel's headers, Linux 4.19's, for x86_64: glibc's and musl's.
@@ -117,6 +127,23 @@ const LINUX_ARM64: Package = Package::deb(
   "e9a92d71d62655f673433c345a03fecaa4292f93c6572b28fd3d16dcfd1cc7f6",
 );
 
+/// GCC 8's crtbegin.o and libgcc for x86_64: glibc's and musl's.
+const LIBGCC_X64: Package = Package::deb(
+  BUSTER,
+  "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_amd64.deb",
+  "a52d5216858c7185bc245e52ad95a6ad515d087bc25e8556df06c5626b41a837",
+);
+
+/// [LIBGCC_X64] for aarch64.
+const LIBGCC_ARM64: Package = Package::deb(
+  BUSTER,
+  "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_arm64.deb",
+  "d8385c0106d4ac559ada75b162aecb9d507a67da3ac8742eb32258f501d07c7e",
+);
+
+/// What a musl sysroot takes of [LIBGCC_X64]: libgcc static, with no glibc's libgcc_s.
+const MUSL_LIBGCC: &[&str] = &["crtbegin", "crtend", "libgcc.a", "libgcc_eh.a"];
+
 /// glibc 2.28 for x86_64: libc, the kernel's headers, and GCC's crtbegin.o, libgcc and libgcc_s.
 pub const GLIBC_X64: &[Package] = &[
   Package::deb(
@@ -130,11 +157,7 @@ pub const GLIBC_X64: &[Package] = &[
     "76b8413920d91a9a4289f99839933d0d30095e0ec12b05bb4f1a7f27e5ef4a55",
   ),
   LINUX_X64,
-  Package::deb(
-    BUSTER,
-    "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_amd64.deb",
-    "a52d5216858c7185bc245e52ad95a6ad515d087bc25e8556df06c5626b41a837",
-  ),
+  LIBGCC_X64,
   Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc1_8.3.0-6_amd64.deb",
@@ -155,11 +178,7 @@ pub const GLIBC_ARM64: &[Package] = &[
     "04097716018288cef8b82339faa1a9847838b89f39574b5b169f4657da8bf269",
   ),
   LINUX_ARM64,
-  Package::deb(
-    BUSTER,
-    "pool/main/g/gcc-8/libgcc-8-dev_8.3.0-6_arm64.deb",
-    "d8385c0106d4ac559ada75b162aecb9d507a67da3ac8742eb32258f501d07c7e",
-  ),
+  LIBGCC_ARM64,
   Package::deb(
     BUSTER,
     "pool/main/g/gcc-8/libgcc1_8.3.0-6_arm64.deb",
@@ -167,8 +186,9 @@ pub const GLIBC_ARM64: &[Package] = &[
   ),
 ];
 
-/// musl's headers for x86_64, and the kernel's: Rust ships its libc.a and crt objects
-/// (`self-contained`), and of the musl it bundles, 1.2.5, Debian's is trixie's.
+/// musl 1.2.5 for x86_64, the one Rust bundles, Debian's in trixie: its headers, and its libc.a and
+/// crt objects for what clang links itself, as a configure script's test (Rust links its own,
+/// `self-contained`); the kernel's headers; GCC's crtbegin.o and libgcc, in musl's folder.
 pub const MUSL_X64: &[Package] = &[
   Package::deb(
     TRIXIE,
@@ -176,6 +196,7 @@ pub const MUSL_X64: &[Package] = &[
     "a3f7d47e452129bb65aae201d6c115abf4d5d3efb136b38b7c6b4fa03ec065e9",
   ),
   LINUX_X64,
+  LIBGCC_X64.only("usr/lib/gcc/x86_64-linux-gnu/8/", MUSL_LIBGCC, "usr/lib/x86_64-linux-musl/"),
 ];
 
 /// [MUSL_X64] for aarch64.
@@ -186,6 +207,7 @@ pub const MUSL_ARM64: &[Package] = &[
     "384ea029e3694baac696d3993d93246f9a4b3741c493697e1ceb7256d8820748",
   ),
   LINUX_ARM64,
+  LIBGCC_ARM64.only("usr/lib/gcc/aarch64-linux-gnu/8/", MUSL_LIBGCC, "usr/lib/aarch64-linux-musl/"),
 ];
 
 /// mingw-w64 for x86_64: the headers, the CRT with its crtbegin.o, the import libraries; and
@@ -668,6 +690,11 @@ mod tests {
     let got = super::place(&Path::new(mingw.root).join("libgcc_eh.a"), mingw).unwrap();
     assert_eq!(got, Some("usr/x86_64-w64-mingw32/lib/libgcc_eh.a".into()));
     assert_eq!(super::place(&Path::new(mingw.root).join("libmsvcrt.a"), mingw).unwrap(), None);
+
+    let (musl, gcc) = (&MUSL_X64[2], Path::new("./usr/lib/gcc/x86_64-linux-gnu/8"));
+    let got = super::place(&gcc.join("crtbeginS.o"), musl).unwrap();
+    assert_eq!(got, Some("usr/lib/x86_64-linux-musl/crtbeginS.o".into()));
+    assert_eq!(super::place(&gcc.join("libgcc_s.so"), musl).unwrap(), None);
   }
 
   #[test]

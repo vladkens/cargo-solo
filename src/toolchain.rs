@@ -146,12 +146,23 @@ impl Target {
 
     // An unused -fuse-ld when only compiling is a warning, an error under -Werror.
     let compiles = args.iter().any(|x| ["-c", "-E", "-S", "-M", "-MM"].iter().any(|f| x == f));
-    if !compiles {
-      out.push("-fuse-ld=lld".into());
-      out.push(cat("-B", gcc_ld));
-      // rustc passes gcc's -no-pie with -static for aarch64 musl, which clang warns is unused, and
-      // the warning shows in every build as the linker's.
-      out.push("-Qunused-arguments".into());
+    if compiles {
+      return out;
+    }
+
+    out.push("-fuse-ld=lld".into());
+    out.push(cat("-B", gcc_ld));
+    // rustc passes gcc's -no-pie with -static for aarch64 musl, which clang warns is unused, and
+    // the warning shows in every build as the linker's.
+    out.push("-Qunused-arguments".into());
+    if self.libc == Libc::Musl {
+      // For what clang links itself, as a configure script's test: the crt objects, libc and
+      // libgcc are in musl's Debian folder, which clang doesn't search, and libgcc is static, as
+      // with Debian's musl-gcc. Rust links with its own.
+      let lib = dir.join("usr/lib").join(self.clang);
+      out.push(cat("-B", &lib));
+      out.push(cat("-L", &lib));
+      out.push("-static-libgcc".into());
     }
 
     out
@@ -572,6 +583,9 @@ mod tests {
     let asm = "-idirafter /c/sr/usr/include/aarch64-linux-gnu";
     let musl = format!("--target=aarch64-linux-musl --sysroot=/c/sr {include} {asm}");
     assert_eq!(flags("aarch64-unknown-linux-musl", "-c a.c"), musl);
+    let lib =
+      "-B/c/sr/usr/lib/aarch64-linux-musl -L/c/sr/usr/lib/aarch64-linux-musl -static-libgcc";
+    assert_eq!(flags("aarch64-unknown-linux-musl", "a.c -o a"), format!("{musl} {link} {lib}"));
 
     let mingw = format!("--target=x86_64-w64-mingw32 --sysroot=/c/sr/usr {link}");
     assert_eq!(flags("x86_64-pc-windows-gnu", "a.o -o a.exe"), mingw);

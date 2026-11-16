@@ -46,8 +46,8 @@ A target cargo-solo doesn't set up goes to cargo as is: on a Mac, `aarch64-apple
 |---|---|---|---|---|
 | `x86_64-unknown-linux-gnu` | glibc 2.28 | Debian 10 | 9.4 MB | 43 MB |
 | `aarch64-unknown-linux-gnu` | glibc 2.28 | Debian 10 | 7.2 MB | 34 MB |
-| `x86_64-unknown-linux-musl` | musl 1.2.5 | Debian 13 and 10 headers, Rust's own libc | 2.1 MB | 10 MB |
-| `aarch64-unknown-linux-musl` | musl 1.2.5 | Debian 13 and 10 headers, Rust's own libc | 2.1 MB | 10 MB |
+| `x86_64-unknown-linux-musl` | musl 1.2.5 | Debian 13, 10's headers and libgcc | 4.4 MB | 13 MB |
+| `aarch64-unknown-linux-musl` | musl 1.2.5 | Debian 13, 10's headers and libgcc | 2.9 MB | 10 MB |
 | `x86_64-pc-windows-gnu` | mingw-w64 12 | Debian 13, rustup's `rust-mingw` | 16 MB | 210 MB |
 | `aarch64-apple-darwin`, `x86_64-apple-darwin` | libSystem, macOS 27 SDK | Zig 0.17.1's source, one sysroot for both | 23 MB | 8 MB |
 

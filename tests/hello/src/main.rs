@@ -1,8 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
 //! The test crate cargo-solo builds for every target: ring (C and assembly through cc), aws-lc-rs,
-//! rustls' crypto (C through its own cc build, NASM objects on Windows), a C file of its own, a
-//! thread, and on Windows a `raw-dylib` link, as windows-sys's are. It prints one line, the same on
-//! every target.
+//! rustls' crypto (C through its own cc build, NASM objects on Windows), a C file of its own and a
+//! C program its build script links, a thread, and on Windows a `raw-dylib` link, as windows-sys's
+//! are. It prints one line, the same on every target.
 
 use std::ffi::{CStr, c_char, c_int};
 
