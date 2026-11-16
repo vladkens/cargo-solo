@@ -213,6 +213,8 @@ pub struct Host {
   sysroot: PathBuf,
   /// rustup's tools for the host, `lib/rustlib/<host>/bin` in rustc's sysroot.
   bin: PathBuf,
+  /// The host's target, by Rust's name.
+  triple: String,
   cache: PathBuf,
 }
 
@@ -240,7 +242,8 @@ impl Host {
       return Err(bad(format!("no rust-lld in {}", bin.display())));
     }
 
-    Ok(Host { clang: clang()?, sysroot, bin, cache: packages::cache()? })
+    let triple = host.to_string();
+    Ok(Host { clang: clang()?, sysroot, bin, triple, cache: packages::cache()? })
   }
 
   /// The environment the wrapper reads, the same for every target.
@@ -278,12 +281,14 @@ impl Host {
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
     let here = env::current_dir()?;
+    // pkg-config's names, as bindgen's but for `TARGET_<base>`, `HOST_<base>` for the host's own.
+    let kind = if target.rust == self.triple { "HOST" } else { "TARGET" };
     let vars =
       [("PKG_CONFIG_LIBDIR", target.pkg_config(&sysroot)?), (BINDGEN, target.bindgen(&sysroot))];
     for (base, value) in vars {
       let name = format!("{base}_{}", target.rust);
       let under = format!("{base}_{}", target.rust.replace('-', "_"));
-      if !chosen(&[base, &name, &under], args, &here) {
+      if !chosen(&[base, &name, &under, &format!("{kind}_{base}")], args, &here) {
         out.push((name, value));
       }
     }
