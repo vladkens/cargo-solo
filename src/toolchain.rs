@@ -130,10 +130,11 @@ impl Target {
 
   /// cc's and cmake-rs's names for this target's variable `base`, in the order they read them,
   /// before `base` itself: `<base>_<target>` (cargo-solo's), `<base>_<target_u>`,
-  /// `TARGET_<base>`.
-  pub fn names(&self, base: &str) -> [String; 3] {
+  /// `TARGET_<base>`, or `HOST_<base>` when it's the `host`'s own.
+  pub fn names(&self, base: &str, host: &str) -> [String; 3] {
     let under = self.rust.replace('-', "_");
-    [format!("{base}_{}", self.rust), format!("{base}_{under}"), format!("TARGET_{base}")]
+    let kind = if self.rust == host { "HOST" } else { "TARGET" };
+    [format!("{base}_{}", self.rust), format!("{base}_{under}"), format!("{kind}_{base}")]
   }
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
@@ -247,7 +248,7 @@ impl Target {
   /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and as where to find
   /// libraries, headers and packages, never programs, the sysroot (for Apple, the SDK in SDKROOT)
   /// and cargo's build folder. Paths with `/`, as cmake reads them on Windows too.
-  pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)]) -> String {
+  pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)], host: &str) -> String {
     let path = |x: &Path| x.to_string_lossy().replace('\\', "/");
     let arch = |x: &'static str| x.split('-').next().unwrap_or_default();
     // As cmake-rs names them.
@@ -274,7 +275,8 @@ impl Target {
       out += &format!("set(CMAKE_{name} \"{}\")\n", path(x));
     }
 
-    out += &CMAKE_CXX.replace("NAMES", &self.names("CXX").join(" "));
+    let names = self.names("CXX", host).join(" ");
+    out += &CMAKE_CXX.replace("NAMES", &names).replace("WRAPPERS", WRAPPERS);
     out += CMAKE_BUILD;
     let modes =
       [("PROGRAM", "NEVER"), ("LIBRARY", "ONLY"), ("INCLUDE", "ONLY"), ("PACKAGE", "ONLY")];
@@ -287,14 +289,30 @@ impl Target {
 }
 
 /// The toolchain file's C++ compiler, cc's: the first of cc's variables (NAMES) set, the user's or
-/// cargo-solo's wrapper. cmake-rs passes no compiler with a toolchain file.
+/// cargo-solo's wrapper, read as cc reads it: a path, or else words, the compiler first, or second
+/// after a wrapper such as sccache, which runs it. cmake-rs passes no compiler with a toolchain
+/// file, but cc's flags, those words' too.
 const CMAKE_CXX: &str = r#"foreach(x NAMES)
   if(DEFINED ENV{${x}})
     file(TO_CMAKE_PATH "$ENV{${x}}" CMAKE_CXX_COMPILER)
+    string(REGEX MATCHALL "[^ \t]+" _cargo_solo_cxx "${CMAKE_CXX_COMPILER}")
+    if(NOT EXISTS "${CMAKE_CXX_COMPILER}" AND _cargo_solo_cxx)
+      list(GET _cargo_solo_cxx 0 CMAKE_CXX_COMPILER)
+      list(LENGTH _cargo_solo_cxx _cargo_solo_n)
+      get_filename_component(_cargo_solo_name "${CMAKE_CXX_COMPILER}" NAME_WE)
+      string(TOLOWER "${_cargo_solo_name}" _cargo_solo_name)
+      if(_cargo_solo_n GREATER 1 AND _cargo_solo_name MATCHES "^(WRAPPERS)$")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CMAKE_CXX_COMPILER}")
+        list(GET _cargo_solo_cxx 1 CMAKE_CXX_COMPILER)
+      endif()
+    endif()
     break()
   endif()
 endforeach()
 "#;
+
+/// The wrappers cc knows, in [CMAKE_CXX].
+const WRAPPERS: &str = "ccache|distcc|sccache|icecc|cachepot|buildcache|kache";
 
 /// The toolchain file's SDK for Apple, the wrapper's: SDKROOT, cargo-solo's or the user's, which
 /// cmake reads itself only as a path with `/`.
@@ -341,6 +359,8 @@ pub struct Host {
   sysroot: PathBuf,
   /// rustup's tools for the host, `lib/rustlib/<host>/bin` in rustc's sysroot.
   bin: PathBuf,
+  /// The host's target, by Rust's name.
+  triple: String,
   cache: PathBuf,
 }
 
@@ -368,7 +388,8 @@ impl Host {
       return Err(bad(format!("no rust-lld in {}", bin.display())));
     }
 
-    Ok(Host { clang: clang()?, sysroot, bin, cache: packages::cache()? })
+    let triple = host.to_string();
+    Ok(Host { clang: clang()?, sysroot, bin, triple, cache: packages::cache()? })
   }
 
   /// The environment the wrapper reads, the same for every target.
@@ -482,7 +503,7 @@ impl Host {
     let here = env::current_dir()?;
     // cc reads `CXX` for the host too, cmake-rs its own for every target.
     let free = |base: &str, plain: bool| {
-      let names = target.names(base);
+      let names = target.names(base, &self.triple);
       let mut vars: Vec<_> = names.iter().map(String::as_str).collect();
       vars.extend(plain.then_some(base));
       (!chosen(&vars, args, &here)).then(|| names[0].clone())
@@ -512,7 +533,7 @@ impl Host {
         ("NM", &nm),
       ];
 
-      let text = target.cmake(sysroot, &tools);
+      let text = target.cmake(sysroot, &tools, &self.triple);
       let bin = self.cache.join("bin");
       let path = folder(&bin, OsStr::new(&text)).join(format!("{}.cmake", target.rust));
       put(&path, &text)?;
@@ -798,8 +819,12 @@ mod tests {
   #[test]
   fn names_are_cc_s_and_cmake_rs_s() {
     let target = Target::find("aarch64-unknown-linux-musl").unwrap();
-    let names = ["CXX_aarch64-unknown-linux-musl", "CXX_aarch64_unknown_linux_musl", "TARGET_CXX"];
-    assert_eq!(target.names("CXX"), names);
+    let mut names =
+      ["CXX_aarch64-unknown-linux-musl", "CXX_aarch64_unknown_linux_musl", "TARGET_CXX"];
+    assert_eq!(target.names("CXX", "aarch64-apple-darwin"), names);
+    // cc's and cmake-rs's for a build for the host itself.
+    names[2] = "HOST_CXX";
+    assert_eq!(target.names("CXX", "aarch64-unknown-linux-musl"), names);
   }
 
   #[test]
@@ -972,8 +997,9 @@ mod tests {
 
   #[test]
   fn cmake_names_the_system_sysroot_and_tools() {
+    const HOST: &str = "aarch64-apple-darwin";
     let gnu = Target::find("aarch64-unknown-linux-gnu").unwrap();
-    let text = gnu.cmake(Path::new("/c/sr"), &[("C_COMPILER", Path::new("/c/b/cc"))]);
+    let text = gnu.cmake(Path::new("/c/sr"), &[("C_COMPILER", Path::new("/c/b/cc"))], HOST);
     assert!(text.contains("set(CMAKE_SYSTEM_NAME Linux)\nset(CMAKE_SYSTEM_PROCESSOR aarch64)\n"));
     assert!(text.contains("set(CMAKE_SYSROOT \"/c/sr\")\nset(CMAKE_C_COMPILER \"/c/b/cc\")\n"));
     assert!(text.contains("set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"));
@@ -983,13 +1009,13 @@ mod tests {
     assert!(text.contains(&format!("foreach(x {names})\n")));
 
     let mingw = Target::find("x86_64-pc-windows-gnu").unwrap();
-    let text = mingw.cmake(Path::new(r"C:\c\sr"), &[("AR", Path::new(r"C:\r\llvm-ar.exe"))]);
+    let text = mingw.cmake(Path::new(r"C:\c\sr"), &[("AR", Path::new(r"C:\r\llvm-ar.exe"))], HOST);
     assert!(text.contains("set(CMAKE_SYSTEM_NAME Windows)\nset(CMAKE_SYSTEM_PROCESSOR AMD64)\n"));
     assert!(text.contains("set(CMAKE_FIND_ROOT_PATH \"C:/c/sr/usr/x86_64-w64-mingw32\")\n"));
     assert!(text.contains("set(CMAKE_AR \"C:/r/llvm-ar.exe\")\n"));
 
     let mac = TARGETS.iter().find(|x| x.rust == "aarch64-apple-darwin").unwrap();
-    let text = mac.cmake(Path::new("/c/sdk"), &[("CXX_COMPILER", Path::new("/c/b/cc"))]);
+    let text = mac.cmake(Path::new("/c/sdk"), &[("CXX_COMPILER", Path::new("/c/b/cc"))], HOST);
     assert!(text.contains("set(CMAKE_SYSTEM_NAME Darwin)\nset(CMAKE_SYSTEM_PROCESSOR arm64)\n"));
     assert!(text.contains("file(TO_CMAKE_PATH \"$ENV{SDKROOT}\" CMAKE_OSX_SYSROOT)\n"));
     assert!(!text.contains("/c/sdk") && !text.contains("CMAKE_SYSROOT"));
