@@ -65,12 +65,12 @@ macOS's targets are set up on Linux and Windows, and run on rustc's oldest macOS
 For each `--target` it sets up, cargo-solo runs cargo with:
 
 - `CC_<target>` and `CARGO_TARGET_<TARGET>_LINKER`: `<target>-clang`, a link to cargo-solo in its cache, which runs your clang with the target's `--target` and `--sysroot` (for macOS, `-isysroot`), and to link, rustup's rust-lld (`-fuse-ld=lld`, as `ld64.lld` for macOS);
-- `AR_<target>`: rustup's llvm-ar;
+- `AR_<target>`: rustup's llvm-ar, and `RANLIB_<target>`, it as ranlib from the folder below: OpenSSL's build otherwise runs the host's `ranlib`;
 - `PATH` with a folder in front that has rustup's llvm-ar and llvm-nm as the target's `ar`, `ranlib` and `nm`, by the names a configure script looks for with `--host`, such as `x86_64-unknown-linux-musl-ar` and `x86_64-linux-musl-ar`: the host's own, such as macOS's ar, can't read the target's objects; for Windows also llvm-ar as `x86_64-w64-mingw32-dlltool` (`dlltool.exe` on Windows), which rustc runs for `raw-dylib` links, as windows-sys's are;
 - for Windows, `AWS_LC_SYS_PREBUILT_NASM_<target>=1`, unless you set it in the environment or cargo's config, so that aws-lc-sys, rustls' crypto, takes the NASM objects it ships and needs no nasm;
 - for macOS, `SDKROOT`, the SDK in the cache, and `MACOSX_DEPLOYMENT_TARGET`, rustc's oldest macOS (10.12, which arm64 raises to 11), unless you set them.
 
-So it sets no `RUSTFLAGS` or `CFLAGS`, which would replace yours. The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files (for macOS, from Zig's source tarball, with libSystem's aliases such as `libc.tbd` and a stub of libiconv added) into the cache: `~/Library/Caches/cargo-solo` on macOS, `~/.cache/cargo-solo` on Linux (`$XDG_CACHE_HOME`), `%LOCALAPPDATA%\cargo-solo` on Windows, or `CARGO_SOLO_CACHE`. Each download is tried from the archive and then from snapshot.debian.org (Zig's from ziglang.org, then a community mirror), and taken only with its pinned SHA-256. cargo-solo writes nothing outside the cache and cargo's target folder.
+So it sets no `RUSTFLAGS` or `CFLAGS`, which would replace yours. The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files (for macOS, from Zig's source tarball, with libSystem's aliases such as `libc.tbd`, a stub of libiconv and `sys/syscall.h` without its numbers added) into the cache: `~/Library/Caches/cargo-solo` on macOS, `~/.cache/cargo-solo` on Linux (`$XDG_CACHE_HOME`), `%LOCALAPPDATA%\cargo-solo` on Windows, or `CARGO_SOLO_CACHE`. Each download is tried from the archive and then from snapshot.debian.org (Zig's from ziglang.org, then a community mirror), and taken only with its pinned SHA-256. cargo-solo writes nothing outside the cache and cargo's target folder.
 
 ## 🚀 GitHub Actions
 

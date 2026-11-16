@@ -111,12 +111,15 @@ impl Target {
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
   /// linker, which rustc takes for a C compiler driving the link by its name, `*-clang`; llvm-ar at
-  /// `ar` its archiver.
-  pub fn env(&self, cc: &Path, ar: &Path) -> [(String, OsString); 3] {
+  /// `ar` its archiver, and as `<target>-ranlib` in `tools` its ranlib, which OpenSSL's build
+  /// otherwise runs as plain `ranlib`, the host's.
+  pub fn env(&self, cc: &Path, ar: &Path, tools: &Path) -> [(String, OsString); 4] {
     let upper = self.rust.to_uppercase().replace('-', "_");
+    let ranlib = tools.join(exe(&format!("{}-ranlib", self.rust)));
     [
       (format!("CC_{}", self.rust), cc.into()),
       (format!("AR_{}", self.rust), ar.into()),
+      (format!("RANLIB_{}", self.rust), ranlib.into()),
       (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
     ]
   }
@@ -241,9 +244,9 @@ impl Host {
     let sysroot = packages::ensure(&self.cache, target.sysroot(), target.packages)?;
     let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
     let ar = self.bin.join(exe("llvm-ar"));
-    let mut out = target.env(&cc, &ar).to_vec();
-    out.extend(darwin);
     let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
+    let mut out = target.env(&cc, &ar, &dir).to_vec();
+    out.extend(darwin);
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
@@ -536,11 +539,14 @@ mod tests {
   }
 
   #[test]
-  fn env_sets_the_compiler_linker_and_archiver() {
+  fn env_sets_the_compiler_linker_archiver_and_ranlib() {
     let target = Target::find("aarch64-unknown-linux-musl").unwrap();
-    let [cc, ar, linker] = target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
+    let [cc, ar, ranlib, linker] =
+      target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"), Path::new("/t"));
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
+    let path = Path::new("/t").join(exe("aarch64-unknown-linux-musl-ranlib"));
+    assert_eq!(ranlib, ("RANLIB_aarch64-unknown-linux-musl".into(), path.into()));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
   }
 
