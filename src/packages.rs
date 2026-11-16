@@ -1020,10 +1020,9 @@ mod tests {
     let cache = Path::new("/c");
     let sysroots =
       TARGETS.iter().map(|x| (x.sysroot().to_string(), dir(cache, x.sysroot(), x.packages)));
-    let cxx = TARGETS.iter().filter_map(|x| {
-      let name = format!("{}-libstdc++", x.clang);
-      Some((name.clone(), dir(cache, &name, x.cxx?.packages)))
-    });
+    let cxx = TARGETS
+      .iter()
+      .filter_map(|x| Some((x.libstdcxx(), dir(cache, &x.libstdcxx(), x.cxx?.packages))));
     let dirs: Vec<_> = sysroots.chain(cxx).collect();
     for (i, (name, x)) in dirs.iter().enumerate() {
       assert!(dirs[..i].iter().all(|(n, y)| (n == name) == (y == x)), "{}", x.display());

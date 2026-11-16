@@ -123,6 +123,11 @@ impl Target {
     }
   }
 
+  /// The name of the folder with this target's libstdc++, in the cache.
+  pub fn libstdcxx(&self) -> String {
+    format!("{}-libstdc++", self.clang)
+  }
+
   /// cc's and cmake-rs's names for this target's variable `base`, in the order they read them,
   /// before `base` itself: `<base>_<target>` (cargo-solo's), `<base>_<target_u>`,
   /// `TARGET_<base>`.
@@ -239,8 +244,9 @@ impl Target {
   }
 
   /// The cmake toolchain file for this target, its sysroot at `dir`: the system, the `tools` by
-  /// cmake's names (`C_COMPILER`, `AR`), and the sysroot as where to find libraries, headers and
-  /// packages, never programs. Paths with `/`, as cmake reads them on Windows too.
+  /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and the sysroot as where to
+  /// find libraries, headers and packages, never programs. Paths with `/`, as cmake reads them on
+  /// Windows too.
   pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)]) -> String {
     let path = |x: &Path| x.to_string_lossy().replace('\\', "/");
     let (system, cpu, sysroot) = match self.libc {
@@ -261,6 +267,7 @@ impl Target {
       out += &format!("set(CMAKE_{name} \"{}\")\n", path(x));
     }
 
+    out += &CMAKE_CXX.replace("NAMES", &self.names("CXX").join(" "));
     let modes =
       [("PROGRAM", "NEVER"), ("LIBRARY", "ONLY"), ("INCLUDE", "ONLY"), ("PACKAGE", "ONLY")];
     for (kind, mode) in modes {
@@ -270,6 +277,16 @@ impl Target {
     out
   }
 }
+
+/// The toolchain file's C++ compiler, cc's: the first of cc's variables (NAMES) set, the user's or
+/// cargo-solo's wrapper. cmake-rs passes no compiler with a toolchain file.
+const CMAKE_CXX: &str = r#"foreach(x NAMES)
+  if(DEFINED ENV{${x}})
+    file(TO_CMAKE_PATH "$ENV{${x}}" CMAKE_CXX_COMPILER)
+    break()
+  endif()
+endforeach()
+"#;
 
 /// Whether clang only compiles with `args`, links nothing.
 fn compiles(args: &[OsString]) -> bool {
@@ -355,7 +372,10 @@ impl Host {
     }
 
     let sysroot = packages::ensure(&self.cache, target.sysroot(), target.packages)?;
-    let [cc, cxx] = wrapper(&self.cache.join("bin"), target, &sysroot)?;
+    // libstdc++'s by its name only: it's fetched on the first C++ compile.
+    let libs = target.cxx.map_or(&[][..], |x| x.packages);
+    let cxx_dir = packages::dir(&self.cache, &target.libstdcxx(), libs);
+    let [cc, cxx] = wrapper(&self.cache.join("bin"), target, [&sysroot, &cxx_dir])?;
     let ar = self.bin.join(exe("llvm-ar"));
     let mut out = target.env(&cc, &ar).to_vec();
     out.extend(darwin);
@@ -566,13 +586,16 @@ fn rustup(sysroot: &Path, args: &[&str]) -> io::Result<()> {
 // MARK: Wrapper
 
 /// The wrappers for `target`, `<target>-clang` and `<target>-clang++`: links to this program in a
-/// folder of `bin` that its path and the target's `sysroot` name. So a build never runs another
-/// cargo-solo, with other tables, and when the sysroot changes, cargo and cc-rs see another
-/// `CC_<t>` and linker, and build anew.
-fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<[PathBuf; 2]> {
+/// folder of `bin` that its path and the target's `dirs`, its sysroot's and libstdc++'s, name. So a
+/// build never runs another cargo-solo, with other tables, and when either changes, cargo and cc-rs
+/// see another `CC_<t>`, `CXX_<t>` and linker, and build anew.
+fn wrapper(bin: &Path, target: &Target, dirs: [&Path; 2]) -> io::Result<[PathBuf; 2]> {
   let me = env::current_exe()?.canonicalize()?;
   let mut key = me.as_os_str().to_owned();
-  key.push(sysroot);
+  for dir in dirs {
+    key.push(dir);
+  }
+
   let dir = folder(bin, &key);
   let out = ["clang", "clang++"].map(|x| dir.join(exe(&format!("{}-{x}", target.rust))));
   for path in &out {
@@ -698,8 +721,7 @@ pub fn wrap(target: &Target, cxx: bool, args: Vec<OsString>) -> io::Result<Comma
   let mut flags = target.flags(&dir, Path::new(&gcc_ld), &args);
   if cxx || links_stdcxx(&args) {
     let lib = target.cxx.ok_or_else(|| bad(format!("no C++ for {}: only C", target.rust)))?;
-    let name = format!("{}-libstdc++", target.clang);
-    let dir = packages::ensure(&cache, &name, lib.packages)?;
+    let dir = packages::ensure(&cache, &target.libstdcxx(), lib.packages)?;
     flags.extend(target.cxx_flags(&dir, cxx, &args));
   }
 
@@ -925,6 +947,8 @@ mod tests {
     assert!(text.contains("set(CMAKE_SYSROOT \"/c/sr\")\nset(CMAKE_C_COMPILER \"/c/b/cc\")\n"));
     assert!(text.contains("set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"));
     assert!(!text.contains("CMAKE_FIND_ROOT_PATH "));
+    let names = "CXX_aarch64-unknown-linux-gnu CXX_aarch64_unknown_linux_gnu TARGET_CXX";
+    assert!(text.contains(&format!("foreach(x {names})\n")));
 
     let mingw = Target::find("x86_64-pc-windows-gnu").unwrap();
     let text = mingw.cmake(Path::new(r"C:\c\sr"), &[("AR", Path::new(r"C:\r\llvm-ar.exe"))]);
