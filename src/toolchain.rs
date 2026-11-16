@@ -891,6 +891,8 @@ mod tests {
       apple.iter().all(|x| x.sysroot() == "macos" && x.here() == (env::consts::OS != "macos"))
     );
     assert_eq!(Target::find("x86_64-unknown-linux-gnu").unwrap().sysroot(), "x86_64-linux-gnu");
+    // C only for Apple's.
+    assert!(TARGETS.iter().all(|x| x.cxx.is_none() == (x.libc == Libc::Darwin)));
   }
 
   #[test]

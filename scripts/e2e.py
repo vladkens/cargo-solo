@@ -3,7 +3,8 @@
 # requires-python = ">=3.11"
 # ///
 """The end-to-end test: the test crates, tests/hello (C) and tests/cxx (C++ and cmake), built by
-cargo-solo for every target it sets up, then run in each target's OS.
+cargo-solo for every target it sets up (tests/cxx but for Apple's: C only), then run in each
+target's OS.
 
 uv run scripts/e2e.py build <dir>   every target's binaries, <dir>/<target>/<name>[.exe], checked
 uv run scripts/e2e.py run <dir>     each binary under <dir> this host can run, its output checked
@@ -111,14 +112,15 @@ def build(out: Path) -> None:
     if not targets:
         sys.exit("e2e: no targets in `cargo solo --help`")
 
-    args = [x for t in targets for x in ("--target", t)]
     tool = readobj()
     for crate, (name, _) in CRATES.items():
+        ours = [t for t in targets if crate != "cxx" or "-apple-" not in t]
+        args = [x for t in ours for x in ("--target", t)]
         dest = ROOT / "target" / crate
         # --keep-going: every target that fails, not only the first
         cmd = [solo, "solo", "build", "--release", "--keep-going", "--target-dir", dest, *args]
         run(*cmd, cwd=ROOT / "tests" / crate)
-        for target in targets:
+        for target in ours:
             file = f"{name}.exe" if "-windows-" in target else name
             (out / target).mkdir(parents=True, exist_ok=True)
             path = shutil.copy2(dest / target / "release" / file, out / target / file)
