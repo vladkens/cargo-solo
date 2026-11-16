@@ -103,7 +103,7 @@ The usual ways to cross-compile, and what each costs:
 | glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
 | musl, Windows gnu | ✅ | ✅ | ✅ |
 | On Apple silicon | native | native | x86_64, emulated |
-| Apple targets | ➖ on a Mac, by cargo | ➖ no frameworks | ➖ your own image |
+| Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
 | C++, cmake | ❌ not yet | ✅ | ✅ |
 
 The first build of a crate with `ring` on Linux arm64: what each tool fetches, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
@@ -115,7 +115,7 @@ The first build of a crate with `ring` on Linux arm64: what each tool fetches, a
 | Web server | 14 MB, +6 s | +75 s building libc | 1.2 GB of images |
 | CLI | 24 MB, +10 s | +140 s building libc | 2.3 GB of images |
 
-Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), Apple targets from Linux or Windows (cargo-zigbuild), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
+Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
 ## 🗺️ Roadmap
 
