@@ -1,4 +1,4 @@
-.PHONY: prepare check test e2e build update clean
+.PHONY: prepare check test e2e pins build update clean
 
 prepare:
 	cargo +nightly fmt
@@ -17,6 +17,10 @@ test:
 
 e2e:
 	uv run scripts/e2e.py all target/e2e
+
+pins:
+	uv run scripts/pins.py
+	cargo test -- --ignored every_package_is_on_every_mirror
 
 build:
 	cargo build --release

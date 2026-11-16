@@ -30,6 +30,7 @@ Each fact has one source: what cargo-solo does is `readme.md` and `cargo solo --
 
 - `docs/roadmap.md` is the person's backlog: change it only when the person asks. Each item is done as a plan and one PR.
 - Keep multi-step work as a checklist in `docs/plans/yyyymmdd-<name>.md`, only ticking it during the work; when done, add `Done: yyyy-mm-dd` on top and a short `## Result`, and move it to `docs/plans/completed/`.
+- `make pins` re-pins the packages to what Debian and rustup have now and fetches every file from every mirror; then `make e2e`.
 - Before committing, run `make check` and `make test`. `make prepare` rewrites files: not a check.
 - A commit is one meaningful change a person can check: one short lowercase line, no body, docs updated in the same commit. When fixing your own unpushed commit, amend or fix up that commit instead of adding a separate fix.
 - Ask the person only when what cargo-solo does must change, a dependency is needed, or the request is ambiguous. Otherwise decide and say so in your report.
