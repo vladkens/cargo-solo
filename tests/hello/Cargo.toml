@@ -1,0 +1,14 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built on its own, never as part of cargo-solo.
+[workspace]
+
+[dependencies]
+ring = "0.17.14"
+
+[build-dependencies]
+cc = "1.11.2"

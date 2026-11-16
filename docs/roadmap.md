@@ -2,7 +2,7 @@
 
 The maintainer's backlog, in order: each item is done as a plan in `docs/plans/` and one PR. Agents change it only when the person asks.
 
-- [ ] **Linux and Windows from any host.** `cargo solo <cargo command> --target <t>` for `x86_64` and `aarch64` `-unknown-linux-gnu` (glibc 2.28) and `-unknown-linux-musl`, and `x86_64-pc-windows-gnu`, on macOS, Linux and Windows; C through `cc`; no flags of its own. Plan: [20261116-linux-windows.md](plans/20261116-linux-windows.md).
+- [x] **Linux and Windows from any host.** `cargo solo <cargo command> --target <t>` for `x86_64` and `aarch64` `-unknown-linux-gnu` (glibc 2.28) and `-unknown-linux-musl`, and `x86_64-pc-windows-gnu`, on macOS, Linux and Windows; C through `cc`; no flags of its own. Plan: [20261116-linux-windows.md](plans/completed/20261116-linux-windows.md).
 - [ ] **Dogfooding and 0.1.0.** vladkens/actions `rust-dist` on cargo-solo in place of cargo-zigbuild, wavo-app's lint as `cargo solo clippy`, ghstats's Dockerfile. Then, with the person's approval, the repo public and 0.1.0 on crates.io.
 - [ ] **C++ and cmake.** `CXX_<t>` through the wrapper with Debian's libstdc++, and a cmake toolchain file per target (`CMAKE_TOOLCHAIN_FILE_<t>`), as cargo-zigbuild, cross, cargo-xwin and zijiren233/cargo-cross all have. For aws-lc-sys through cmake, and ghstats.
 - [ ] **The target from cargo config.** With no `--target`, set up the one in `build.target` of `.cargo/config.toml` or `CARGO_BUILD_TARGET`, as cargo-zigbuild, cargo-xwin and zijiren233/cargo-cross do; such a build now runs with the host's C compiler.

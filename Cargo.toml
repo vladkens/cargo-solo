@@ -6,5 +6,12 @@ description = "Cross-compile Rust for Linux and Windows from macOS, Linux or Win
 authors = ["vladkens"]
 license = "MIT"
 repository = "https://github.com/vladkens/cargo-solo"
+readme = "readme.md"
+keywords = ["cross-compile", "cargo-subcommand", "musl", "glibc", "mingw"]
+categories = ["development-tools::cargo-plugins", "development-tools::build-utils"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/readme.md"]
 
 [dependencies]
+hmac-sha256 = { version = "1.1.15", default-features = false }
+lzma-rs = "0.3.0"
+tar = { version = "0.4.46", default-features = false }
