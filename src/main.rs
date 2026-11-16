@@ -47,7 +47,7 @@ fn start() -> io::Result<()> {
     let host = Host::find()?;
     cargo.envs(host.env());
     for target in ours {
-      cargo.envs(host.setup(target)?);
+      cargo.envs(host.setup(target, &args)?);
     }
   }
 

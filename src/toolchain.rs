@@ -79,22 +79,14 @@ impl Target {
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
   /// linker, which rustc takes for a C compiler driving the link by its name, `*-clang`; llvm-ar at
-  /// `ar` its archiver; for Windows, aws-lc-sys's NASM objects, unless the user chose.
-  pub fn env(&self, cc: &Path, ar: &Path) -> Vec<(String, OsString)> {
+  /// `ar` its archiver.
+  pub fn env(&self, cc: &Path, ar: &Path) -> [(String, OsString); 3] {
     let upper = self.rust.to_uppercase().replace('-', "_");
-    let mut out = vec![
+    [
       (format!("CC_{}", self.rust), cc.into()),
       (format!("AR_{}", self.rust), ar.into()),
       (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
-    ];
-
-    let nasm = format!("{PREBUILT_NASM}_{}", self.rust.replace('-', "_"));
-    let chosen = [PREBUILT_NASM, &nasm].iter().any(|x| env::var_os(x).is_some());
-    if self.libc == Libc::Mingw && !chosen {
-      out.push((nasm, "1".into()));
-    }
-
-    out
+    ]
   }
 
   /// The flags the wrapper puts after clang's `args`, so that they win over the `--target` cc-rs
@@ -185,8 +177,10 @@ impl Host {
   }
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it.
-  pub fn setup(&self, target: &Target) -> io::Result<Vec<(String, OsString)>> {
+  /// gives the environment cargo runs with for it, and for Windows, rustc's dlltool in front of
+  /// PATH and aws-lc-sys's NASM objects, unless the user chose in cargo's `args`, config or
+  /// environment.
+  pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     if !self.sysroot.join("lib/rustlib").join(target.rust).join("lib").is_dir() {
       rustup(&self.sysroot, &["target", "add", target.rust])?;
     }
@@ -194,16 +188,40 @@ impl Host {
     let sysroot = packages::ensure(&self.cache, target.clang, target.packages)?;
     let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
     let ar = self.bin.join(exe("llvm-ar"));
-    let mut out = target.env(&cc, &ar);
-    if target.libc == Libc::Mingw {
-      let dir = dlltool(&self.cache.join("bin"), target, &ar)?;
-      let path = env::var_os("PATH").unwrap_or_default();
-      let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
-      out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
+    let mut out = target.env(&cc, &ar).to_vec();
+    if target.libc != Libc::Mingw {
+      return Ok(out);
+    }
+
+    let dir = dlltool(&self.cache.join("bin"), target, &ar)?;
+    let path = env::var_os("PATH").unwrap_or_default();
+    let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
+    out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
+    if !chosen(PREBUILT_NASM, args, &env::current_dir()?) {
+      out.push((format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_")), "1".into()));
     }
 
     Ok(out)
   }
+}
+
+/// Whether the user set `var`, or a target's `<var>_<target>`, for cargo: in its `args`, its
+/// environment, or a config file it reads, in `.cargo` of `here` and of each folder above, and in
+/// CARGO_HOME. By the name alone, which is all a choice needs.
+fn chosen(var: &str, args: &[OsString], here: &Path) -> bool {
+  if args.iter().any(|x| x.to_string_lossy().contains(var)) {
+    return true;
+  }
+
+  if env::vars_os().any(|(k, _)| k.to_string_lossy().starts_with(var)) {
+    return true;
+  }
+
+  let home = env::var_os("CARGO_HOME").map(PathBuf::from);
+  let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
+  let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
+  let files = dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]);
+  files.filter_map(|x| fs::read_to_string(x).ok()).any(|x| x.contains(var))
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -376,16 +394,26 @@ mod tests {
 
   #[test]
   fn env_sets_the_compiler_linker_and_archiver() {
-    let env = |name| Target::find(name).unwrap().env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
-    let musl = env("aarch64-unknown-linux-musl");
-    assert_eq!(musl[0], ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
-    assert_eq!(musl[1], ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
-    let linker = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
-    assert_eq!(musl[2], (linker.into(), "/c/cc".into()));
-    assert_eq!(musl.len(), 3);
+    let target = Target::find("aarch64-unknown-linux-musl").unwrap();
+    let [cc, ar, linker] = target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
+    assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
+    assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
+    assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+  }
 
-    let nasm = ("AWS_LC_SYS_PREBUILT_NASM_x86_64_pc_windows_gnu".into(), "1".into());
-    assert_eq!(env("x86_64-pc-windows-gnu")[3..], [nasm]);
+  #[test]
+  fn chosen_finds_the_var_in_args_and_cargo_s_config() {
+    let dir = env::temp_dir().join(format!("cargo-solo-chosen-{}", std::process::id()));
+    let here = dir.join("a/b");
+    fs::create_dir_all(dir.join("a/.cargo")).unwrap();
+    fs::create_dir_all(&here).unwrap();
+    let var = "CARGO_SOLO_TEST_CHOSEN";
+    assert!(!chosen(var, &[], &here));
+    assert!(chosen(var, &args("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"), &here));
+
+    fs::write(dir.join("a/.cargo/config.toml"), format!("[env]\n{var}_x = \"0\"\n")).unwrap();
+    assert!(chosen(var, &[], &here));
+    fs::remove_dir_all(&dir).unwrap();
   }
 
   #[test]
