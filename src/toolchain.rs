@@ -224,9 +224,9 @@ impl Host {
   }
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it: for Windows, rustc's dlltool in front of PATH
-  /// and aws-lc-sys's NASM objects, for Apple, the [SDK and the oldest macOS](Host::darwin), unless
-  /// the user chose in cargo's `args`, config or environment.
+  /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, for Windows
+  /// aws-lc-sys's NASM objects, for Apple the [SDK and the oldest macOS](Host::darwin), unless the
+  /// user chose in cargo's `args`, config or environment.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     // First, as it checks the tools before any download.
     let darwin = match target.libc {
@@ -243,14 +243,14 @@ impl Host {
     let ar = self.bin.join(exe("llvm-ar"));
     let mut out = target.env(&cc, &ar).to_vec();
     out.extend(darwin);
+    let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
+    let path = env::var_os("PATH").unwrap_or_default();
+    let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
+    out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
     if target.libc != Libc::Mingw {
       return Ok(out);
     }
 
-    let dir = dlltool(&self.cache.join("bin"), target, &ar)?;
-    let path = env::var_os("PATH").unwrap_or_default();
-    let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
-    out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
     let nasm = format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_"));
     if !chosen(&[PREBUILT_NASM, &nasm], args, &env::current_dir()?) {
       out.push((nasm, "1".into()));
@@ -404,14 +404,29 @@ fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
   Ok(path)
 }
 
-/// The folder for PATH with rustc's dlltool for Windows `target`, which makes import libraries for
-/// the DLLs that `raw-dylib` links name, as windows-sys's do: a link to llvm-ar at `ar`, which runs
-/// as llvm-dlltool by the name rustc looks for, `dlltool.exe` on Windows, `<target>-dlltool`
-/// elsewhere.
-fn dlltool(bin: &Path, target: &Target, ar: &Path) -> io::Result<PathBuf> {
-  let name = if cfg!(windows) { exe("dlltool") } else { format!("{}-dlltool", target.clang) };
-  let dir = folder(bin, ar.as_os_str());
-  place(ar, &dir.join(name))?;
+/// The folder for PATH with the binutils of `target` by the names a configure script looks for
+/// with `--host`: `<triple>-ar`, `-ranlib` and `-nm`, by Rust's triple and Debian's, for the host's
+/// own, such as macOS's ar, can't read the target's objects. They are links to rustup's tools in
+/// `llvm`: llvm-ar, which runs as ranlib by that name, and llvm-nm. For Windows, also rustc's
+/// dlltool, which makes import libraries for the DLLs that `raw-dylib` links name, as
+/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere.
+fn tools(bin: &Path, target: &Target, llvm: &Path) -> io::Result<PathBuf> {
+  let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+  let tools = [("ar", &ar), ("ranlib", &ar), ("nm", &nm)];
+  let triples = [target.rust, target.clang];
+  let mut names: Vec<_> =
+    triples.iter().flat_map(|t| tools.map(|(x, to)| (to, format!("{t}-{x}")))).collect();
+
+  if target.libc == Libc::Mingw {
+    let name = if cfg!(windows) { "dlltool".into() } else { format!("{}-dlltool", target.clang) };
+    names.push((&ar, name));
+  }
+
+  let dir = folder(bin, llvm.as_os_str());
+  for (to, name) in names {
+    place(to, &dir.join(exe(&name)))?;
+  }
+
   Ok(dir)
 }
 
@@ -527,6 +542,31 @@ mod tests {
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+  }
+
+  #[test]
+  fn tools_are_llvm_s_by_the_target_s_names() {
+    let dir = env::temp_dir().join(format!("cargo-solo-tools-{}", std::process::id()));
+    let llvm = dir.join("llvm");
+    fs::create_dir_all(&llvm).unwrap();
+    let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+    fs::write(&ar, "ar").unwrap();
+    fs::write(&nm, "nm").unwrap();
+
+    let musl = tools(&dir, Target::find("x86_64-unknown-linux-musl").unwrap(), &llvm).unwrap();
+    for (to, name) in [(&ar, "x86_64-unknown-linux-musl-ar"), (&ar, "x86_64-linux-musl-ranlib")] {
+      assert!(runs(&musl.join(exe(name)), to), "{name}");
+    }
+
+    assert!(runs(&musl.join(exe("x86_64-linux-musl-nm")), &nm));
+    assert!(!musl.join(exe("x86_64-w64-mingw32-dlltool")).exists());
+
+    let mingw = tools(&dir, Target::find("x86_64-pc-windows-gnu").unwrap(), &llvm).unwrap();
+    let dlltool = if cfg!(windows) { "dlltool" } else { "x86_64-w64-mingw32-dlltool" };
+    assert_eq!(mingw, musl);
+    assert!(runs(&mingw.join(exe(dlltool)), &ar));
+    assert!(runs(&mingw.join(exe("x86_64-w64-mingw32-ar")), &ar));
+    fs::remove_dir_all(&dir).unwrap();
   }
 
   #[test]
