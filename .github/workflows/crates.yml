@@ -9,7 +9,7 @@ on:
     inputs:
       solo:
         description: cargo-solo's ref
-        default: feat/cxx
+        default: exp/solo
 
 permissions:
   contents: read
@@ -19,7 +19,7 @@ defaults:
     shell: bash
 
 env:
-  SOLO_REF: ${{ inputs.solo || 'feat/cxx' }}
+  SOLO_REF: ${{ inputs.solo || 'exp/solo' }}
   PYTHONUTF8: 1
 
 jobs:
@@ -50,6 +50,17 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: cargo install --locked --path solo
       - run: echo "CARGO_SOLO_CACHE=$RUNNER_TEMP/cargo-solo" >> "$GITHUB_ENV"
+      # What the crates need of the host, as their users install it: nasm for boring-sys's
+      # Windows asm, and on Windows a full Perl for openssl-src, not Git's.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y -q nasm
+      - if: runner.os == 'macOS'
+        run: brew install -q nasm
+      - if: runner.os == 'Windows'
+        run: |
+          choco install -y --no-progress nasm
+          echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
       - working-directory: tests/crates
         run: cargo solo build --release --keep-going --workspace --target ${{ matrix.target }} 2>&1 | tee build.log || true
       - run: uv run tests/crates/crates.py collect ${{ runner.os }} ${{ matrix.target }} out
