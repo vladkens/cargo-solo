@@ -1,0 +1,120 @@
+name: crates
+
+# Popular crates with C and C++ inside (tests/crates), built by cargo-solo of the ref `solo` on
+# every host for every target, then run. A branch of its own, never merged.
+on:
+  push:
+    branches: [exp/crates]
+  workflow_dispatch:
+    inputs:
+      solo:
+        description: cargo-solo's ref
+        default: feat/cxx
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SOLO_REF: ${{ inputs.solo || 'feat/cxx' }}
+  PYTHONUTF8: 1
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+        exclude:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOLO_REF }}
+          path: solo
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: cargo install --locked --path solo
+      - run: echo "CARGO_SOLO_CACHE=$RUNNER_TEMP/cargo-solo" >> "$GITHUB_ENV"
+      - working-directory: tests/crates
+        run: cargo solo build --release --keep-going --workspace --target ${{ matrix.target }} 2>&1 | tee build.log || true
+      - run: uv run tests/crates/crates.py collect ${{ runner.os }} ${{ matrix.target }} out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: out-${{ runner.os }}-${{ matrix.target }}
+          path: out/
+
+  # the host's own target by cargo alone, for what fails without cargo-solo
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - working-directory: tests/crates
+        run: cargo build --release --keep-going --workspace --target ${{ matrix.target }} 2>&1 | tee build.log || true
+      - run: uv run tests/crates/crates.py collect native-${{ runner.os }} ${{ matrix.target }} out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: out-native-${{ runner.os }}
+          path: out/
+
+  run:
+    needs: build
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - if: runner.os == 'Linux'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: out-*
+          path: out
+          merge-multiple: true
+      - run: uv run tests/crates/crates.py run out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: run-${{ runner.os }}
+          path: out/res/run-*.json
+
+  report:
+    needs: [build, native, run]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - run: uv run tests/crates/crates.py report out

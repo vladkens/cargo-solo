@@ -1,0 +1,7 @@
+# Popular crates with C and C++ inside, one package each, built by cargo-solo for every target.
+[workspace]
+resolver = "3"
+members = ["c-*"]
+
+[profile.release]
+debug = false

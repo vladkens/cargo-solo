@@ -1,0 +1,7 @@
+[package]
+name = "c-pq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pq-sys = { version = "0.7.8", features = ["bundled"] }
