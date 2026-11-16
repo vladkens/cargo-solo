@@ -346,14 +346,40 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
   Ok(())
 }
 
-/// What Apple's SDK at `root` has beside Zig's files: libSystem's aliases, and libiconv.
+/// What Apple's SDK at `root` has beside Zig's files: libSystem's aliases, and libiconv. Its
+/// stub without `arm64e.x1`, which rust-lld before Rust 1.100 can't read: each list with it has
+/// `arm64e` too.
 fn sdk(root: &Path) -> io::Result<()> {
   let lib = root.join("usr/lib");
+  let path = lib.join("libSystem.tbd");
+  fs::write(&path, without(&fs::read_to_string(&path)?, "arm64e.x1-"))?;
   for name in LIBSYSTEM_ALIASES {
-    copy(&lib.join("libSystem.tbd"), &lib.join(format!("lib{name}.tbd")))?;
+    copy(&path, &lib.join(format!("lib{name}.tbd")))?;
   }
 
   fs::write(lib.join("libiconv.tbd"), LIBICONV)
+}
+
+/// The `.tbd` text `tbd` without the targets that start with `arch`, each with its comma.
+fn without(tbd: &str, arch: &str) -> String {
+  let mut out = String::with_capacity(tbd.len());
+  let mut rest = tbd;
+  while let Some(i) = rest.find(arch) {
+    let mut end = rest[i..].find([',', ' ', '\n', ']']).map_or(rest.len(), |x| i + x);
+    match rest[..i].trim_end().strip_suffix(',') {
+      Some(head) => out.push_str(head),
+      // The first in its list: the comma after it.
+      None => {
+        out.push_str(&rest[..i]);
+        end += usize::from(rest[end..].starts_with(','));
+      }
+    }
+
+    rest = &rest[end..];
+  }
+
+  out.push_str(rest);
+  out
 }
 
 // MARK: Fetch
@@ -734,7 +760,7 @@ mod tests {
     let files = [
       (at(0, "stdio.h"), "stdio"),
       (at(0, "sys/types.h"), "types"),
-      (at(1, "libSystem.tbd"), "libSystem"),
+      (at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]"),
       // Not taken: one that the sysroot leaves out, and another libc's.
       (at(1, "SDKSettings.json"), "{}"),
       (DARWIN[1].root.replace("/darwin/", "/glibc/") + "stdio.h", "glibc"),
@@ -753,9 +779,9 @@ mod tests {
     let read = |x: &str| fs::read_to_string(dir.join(x)).unwrap();
     assert_eq!(read("usr/include/stdio.h"), "stdio");
     assert_eq!(read("usr/include/sys/types.h"), "types");
-    assert_eq!(read("usr/lib/libSystem.tbd"), "libSystem");
-    assert_eq!(read("usr/lib/libc.tbd"), "libSystem");
-    assert_eq!(read("usr/lib/libm.tbd"), "libSystem");
+    assert_eq!(read("usr/lib/libSystem.tbd"), "[ arm64e-macos ]");
+    assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]");
+    assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");
     assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
     let names = |x: &str| {
       let mut out: Vec<_> =
@@ -766,6 +792,19 @@ mod tests {
     assert_eq!(names(""), ["usr"]);
     assert_eq!(names("usr"), ["include", "lib"]);
     fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn without_drops_a_target_from_each_list() {
+    let tbd =
+      "targets:  [ x86_64-macos, arm64e-macos, \n    arm64e.x1-macos, arm64e.x1-maccatalyst ]
+  - targets: [ arm64e.x1-macos, arm64-macos ]
+    symbols: [ _a, _b ]";
+    let want = "targets:  [ x86_64-macos, arm64e-macos ]
+  - targets: [  arm64-macos ]
+    symbols: [ _a, _b ]";
+    assert_eq!(without(tbd, "arm64e.x1-"), want);
+    assert_eq!(without("[ a ]", "arm64e.x1-"), "[ a ]");
   }
 
   #[test]
