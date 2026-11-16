@@ -65,7 +65,7 @@ def runs(target: str, dir: Path) -> list[tuple[str, int, str]]:
             rs = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
             return -1, "timeout"
-        return rs.returncode, (rs.stdout + rs.stderr).strip()[-600:]
+        return rs.returncode, (rs.stdout + rs.stderr).strip()
 
     if "-linux-" in target and sys.platform == "linux":
         arch = "amd64" if target.startswith("x86_64-") else "arm64"
@@ -74,21 +74,25 @@ def runs(target: str, dir: Path) -> list[tuple[str, int, str]]:
         cmd = ["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{dir}:/b:ro"]
         _, text = one([*cmd, image, "sh", "-c", loop])
         got = re.findall(r"^@@ (\S+)\n(.*?)^@@rc (\d+)$", text + "\n", re.M | re.S)
-        return [(name.removesuffix(".exe"), int(rc), body.strip()) for name, body, rc in got]
+        return [(name, int(rc), body.strip()[-600:]) for name, body, rc in got]
 
     out = []
     if "-windows-" in target and sys.platform == "win32":
         for x in files:
-            out.append((x.stem, *one([str(x)])))
+            rc, text = one([str(x)])
+            out.append((x.stem, rc, text[-600:]))
     elif "-apple-" in target and sys.platform == "darwin":
         rosetta = target.startswith("x86_64-") and platform.machine() != "x86_64"
         for x in files:
-            out.append((x.name, *one(["arch", "-x86_64", str(x)] if rosetta else [str(x)])))
+            rc, text = one(["arch", "-x86_64", str(x)] if rosetta else [str(x)])
+            out.append((x.name, rc, text[-600:]))
 
     return out
 
 
 def run(out: Path) -> None:
+    # absolute, for docker's -v
+    out = out.resolve()
     res = []
     for dir in sorted((out / "bin").glob("*/*")):
         host, target = dir.parent.name, dir.name
