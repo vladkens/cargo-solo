@@ -15,7 +15,7 @@
 ## 🌟 Features
 
 - 🎯 **Linux glibc and musl, x86_64 and aarch64, and Windows**, from any of macOS, Linux and Windows
-- 🧱 **C dependencies through `cc`**, such as `ring`, with no setup
+- 🧱 **C dependencies through `cc`**, such as `ring` and `aws-lc-rs`, rustls' crypto, with no setup
 - 🐧 **glibc 2.28**: the binary runs on Debian 10, RHEL 8 and anything newer
 - 🪶 **2 to 16 MB per target**, fetched once: no Zig, no Docker image, no toolchain of ours
 - 🔐 **Nothing of ours hosted**: every file is Debian's or rustup's, pinned by SHA-256
@@ -56,7 +56,9 @@ On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 
 For each `--target` it sets up, cargo-solo runs cargo with:
 
 - `CC_<target>` and `CARGO_TARGET_<TARGET>_LINKER`: `<target>-clang`, a link to cargo-solo in its cache, which runs your clang with the target's `--target` and `--sysroot`, and to link, rustup's rust-lld (`-fuse-ld=lld`);
-- `AR_<target>`: rustup's llvm-ar.
+- `AR_<target>`: rustup's llvm-ar;
+- for Windows, `PATH` with a folder in front that has llvm-ar as `x86_64-w64-mingw32-dlltool` (`dlltool.exe` on Windows), which rustc runs for `raw-dylib` links, as windows-sys's are;
+- for Windows, `AWS_LC_SYS_PREBUILT_NASM_<target>=1`, unless you set it in the environment or cargo's config, so that aws-lc-sys, rustls' crypto, takes the NASM objects it ships and needs no nasm.
 
 So it sets no `RUSTFLAGS` or `CFLAGS`, which would replace yours. The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files into the cache: `~/Library/Caches/cargo-solo` on macOS, `~/.cache/cargo-solo` on Linux (`$XDG_CACHE_HOME`), `%LOCALAPPDATA%\cargo-solo` on Windows, or `CARGO_SOLO_CACHE`. Each download is tried from the archive and then from snapshot.debian.org, and taken only with its pinned SHA-256. cargo-solo writes nothing outside the cache and cargo's target folder.
 
