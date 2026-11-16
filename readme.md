@@ -12,13 +12,17 @@
 
 `cargo solo build --target <target>` builds your Rust project, C dependencies included, for Linux and Windows from a Mac, Linux or Windows, and for macOS from Linux or Windows. It uses the clang your system has and the lld rustup ships, and fetches each target's libc from Debian's own packages (macOS's from Zig's source) on first use, pinned by SHA-256 and cached.
 
+## 🤔 Why
+
+`rustup target add` gives you Rust's std for another OS, but no C compiler, linker or libc for it, and nearly every project needs them: rustls' crypto, bundled SQLite and zstd are C. So cross-compiling takes Zig (cargo-zigbuild), Docker (cross), or a runner per OS, whose binary needs that runner's new glibc. cargo-solo needs none of them: your clang, rustup's lld and llvm-ar, and a few MB of Debian's own packages per target. [How it compares](#-compared).
+
 ## 🌟 Features
 
 - 🎯 **Linux glibc and musl, x86_64 and aarch64, and Windows**, from any of macOS, Linux and Windows
 - 🍏 **macOS, arm64 and x86_64, from Linux and Windows**: Rust and C, without Apple's frameworks
 - 🧱 **C dependencies through `cc`**, such as `ring` and `aws-lc-rs`, rustls' crypto, with no setup
 - 🐧 **glibc 2.28**: the binary runs on Debian 10, RHEL 8 and anything newer
-- 🪶 **2 to 23 MB per target**, fetched once: no Zig, no Docker image, no toolchain of ours
+- 🪶 **3 to 23 MB per target**, fetched once: no Zig, no Docker image, no toolchain of ours
 - 🔐 **Nothing of ours hosted**: every file is Debian's, rustup's or Zig's, pinned by SHA-256
 - 🧰 **Your flags stay yours**: `RUSTFLAGS` and `CFLAGS` work as without it
 
@@ -42,16 +46,17 @@ A target cargo-solo doesn't set up goes to cargo as is: on a Mac, `aarch64-apple
 
 ## 🎯 Targets
 
-| Target | libc | From | Download | On disk |
-|---|---|---|---|---|
-| `x86_64-unknown-linux-gnu` | glibc 2.28 | Debian 10 | 9.4 MB | 43 MB |
-| `aarch64-unknown-linux-gnu` | glibc 2.28 | Debian 10 | 7.2 MB | 34 MB |
-| `x86_64-unknown-linux-musl` | musl 1.2.5 | Debian 13 and 10 headers, Rust's own libc | 2.1 MB | 10 MB |
-| `aarch64-unknown-linux-musl` | musl 1.2.5 | Debian 13 and 10 headers, Rust's own libc | 2.1 MB | 10 MB |
-| `x86_64-pc-windows-gnu` | mingw-w64 12 | Debian 13, rustup's `rust-mingw` | 16 MB | 210 MB |
-| `aarch64-apple-darwin`, `x86_64-apple-darwin` | libSystem, macOS 27 SDK | Zig 0.17.1's source, one sysroot for both | 23 MB | 8 MB |
+| Target | libc | Download | On disk |
+|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | glibc 2.28 | 9.4 MB | 43 MB |
+| `aarch64-unknown-linux-gnu` | glibc 2.28 | 7.2 MB | 34 MB |
+| `x86_64-unknown-linux-musl` | musl 1.2.5 | 4.4 MB | 13 MB |
+| `aarch64-unknown-linux-musl` | musl 1.2.5 | 2.9 MB | 10 MB |
+| `x86_64-pc-windows-gnu` | mingw-w64 12 | 16 MB | 210 MB |
+| `aarch64-apple-darwin` | libSystem | 23 MB | 8 MB |
+| `x86_64-apple-darwin` | libSystem | the same | the same |
 
-On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
+glibc is Debian 10's; musl Debian 13's, with 10's kernel headers and libgcc; mingw-w64 Debian 13's, with rustup's `rust-mingw`; macOS's SDK, 27's, Zig 0.17.1's source, one for both. On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
 
 macOS's targets are set up on Linux and Windows, and run on rustc's oldest macOS: 11 on arm64, 10.12 on x86_64. Their SDK is macOS's headers and the stub of its libSystem from Zig's source, which covers what Rust and C need, with no Apple frameworks: a crate that links one, such as `security-framework` (`-framework Security`), fails with `framework not found`. For those, set `SDKROOT` to Xcode's SDK from your Mac, which cargo-solo then uses instead, or build on a macOS runner. No C++ either (`-lc++`).
 
@@ -61,7 +66,7 @@ For each `--target` it sets up, cargo-solo runs cargo with:
 
 - `CC_<target>` and `CARGO_TARGET_<TARGET>_LINKER`: `<target>-clang`, a link to cargo-solo in its cache, which runs your clang with the target's `--target` and `--sysroot` (for macOS, `-isysroot`), and to link, rustup's rust-lld (`-fuse-ld=lld`, as `ld64.lld` for macOS);
 - `AR_<target>`: rustup's llvm-ar;
-- for Windows, `PATH` with a folder in front that has llvm-ar as `x86_64-w64-mingw32-dlltool` (`dlltool.exe` on Windows), which rustc runs for `raw-dylib` links, as windows-sys's are;
+- `PATH` with a folder in front that has rustup's llvm-ar and llvm-nm as the target's `ar`, `ranlib` and `nm`, by the names a configure script looks for with `--host`, such as `x86_64-unknown-linux-musl-ar` and `x86_64-linux-musl-ar`: the host's own, such as macOS's ar, can't read the target's objects; for Windows also llvm-ar as `x86_64-w64-mingw32-dlltool` (`dlltool.exe` on Windows), which rustc runs for `raw-dylib` links, as windows-sys's are;
 - for Windows, `AWS_LC_SYS_PREBUILT_NASM_<target>=1`, unless you set it in the environment or cargo's config, so that aws-lc-sys, rustls' crypto, takes the NASM objects it ships and needs no nasm;
 - for macOS, `SDKROOT`, the SDK in the cache, and `MACOSX_DEPLOYMENT_TARGET`, rustc's oldest macOS (10.12, which arm64 raises to 11), unless you set them.
 
@@ -85,16 +90,32 @@ jobs:
 
 ## 🆚 Compared
 
+The usual ways to cross-compile, and what each costs:
+
+- **A runner per OS**: a job per target, and the binary needs the runner's glibc. `ubuntu-latest` has 2.43, and a binary built on 2.34 or newer doesn't start on RHEL 8 or Debian 11.
+- **[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)**: Zig, a second compiler with its own libc, a 55 to 100 MB download. Its glibc is stubs, which [don't always behave as the real one](https://github.com/rust-cross/cargo-zigbuild#specify-glibc-version).
+- **[cross](https://github.com/cross-rs/cross)**: Docker or Podman and an image per target. On a Mac that's a Linux VM, and the images are x86_64 only, emulated on Apple silicon. Their glibc is Ubuntu 24.04's, 2.39.
+- **A distro's cross GCC**, such as `gcc-aarch64-linux-gnu`: Linux only, the distro's glibc, and `CC_<target>` and the linker set by hand.
+
 | | **cargo-solo** | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | [cross](https://github.com/cross-rs/cross) |
 |---|---|---|---|
 | Needs | clang, rustup | Zig | Docker or Podman |
-| Linux gnu and musl | ✅ glibc 2.28 | ✅ any glibc | ✅ the image's glibc |
-| Windows gnu | ✅ | ✅ | ✅ |
-| macOS targets | ❌ cargo itself, on a Mac | ✅ | ➖ an image you build with the SDK |
+| glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
+| musl, Windows gnu | ✅ | ✅ | ✅ |
+| On Apple silicon | native | native | x86_64, emulated |
+| Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
 | C++, cmake | ❌ not yet | ✅ | ✅ |
-| Fetches | the target's libc, 2 to 16 MB | Zig, with every target's libc | an image per target |
 
-For `-windows-msvc`, use [cargo-xwin](https://github.com/rust-cross/cargo-xwin).
+The first build of a crate with `ring` on Linux arm64: what each tool fetches, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
+
+| First build | cargo-solo | cargo-zigbuild | cross |
+|---|---|---|---|
+| Once per machine | llvm-tools, 34 MB | Zig, 53 MB | Docker |
+| Unpacked | 165 MB | 401 MB | in Docker's VM |
+| Web server | 14 MB, +6 s | +75 s building libc | 1.2 GB of images |
+| CLI | 24 MB, +10 s | +140 s building libc | 2.3 GB of images |
+
+Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
 ## 🗺️ Roadmap
 
