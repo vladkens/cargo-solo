@@ -206,8 +206,8 @@ impl Host {
   }
 }
 
-/// Whether the user set one of `vars` for cargo: in its environment or `args`, or on a line that is
-/// no comment in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo`
+/// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside comments
+/// in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo`
 /// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
 /// needs.
 fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
@@ -225,7 +225,22 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
   let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
   let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
   let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
-  texts.any(|x| x.lines().any(|x| !x.trim_start().starts_with('#') && named(x)))
+  texts.any(|x| x.lines().any(|x| named(code(x))))
+}
+
+/// A TOML `line` without its comment, from the first `#` outside quotes.
+fn code(line: &str) -> &str {
+  let mut quote = None;
+  for (i, c) in line.char_indices() {
+    match (quote, c) {
+      (None, '#') => return &line[..i],
+      (None, '"' | '\'') => quote = Some(c),
+      (Some(q), _) if c == q => quote = None,
+      _ => {}
+    }
+  }
+
+  line
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -413,7 +428,8 @@ mod tests {
     assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"));
     assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_y=0"));
 
-    fs::write(&config, "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\n").unwrap();
+    let comments = "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\nA = 1 # CARGO_SOLO_TEST_CHOSEN\n";
+    fs::write(&config, comments).unwrap();
     assert!(!chosen("build"));
 
     fs::write(here.join("my.toml"), "[env]\nCARGO_SOLO_TEST_CHOSEN_x = \"0\"\n").unwrap();
