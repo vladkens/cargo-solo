@@ -2,9 +2,9 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""The end-to-end test: the test crates, tests/hello (C) and tests/cxx (C++ and cmake), built by
-cargo-solo for every target it sets up (tests/cxx but for Apple's: C only), then run in each
-target's OS.
+"""The end-to-end test: the test crates, tests/hello (C through cc and cmake) and tests/cxx (C++
+through both), built by cargo-solo for every target it sets up (tests/cxx but for Apple's: C
+only), then run in each target's OS.
 
 uv run scripts/e2e.py build <dir>   every target's binaries, <dir>/<target>/<name>[.exe], checked
 uv run scripts/e2e.py run <dir>     each binary under <dir> this host can run, its output checked

@@ -244,23 +244,30 @@ impl Target {
   }
 
   /// The cmake toolchain file for this target, its sysroot at `dir`: the system, the `tools` by
-  /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and the sysroot as where to
-  /// find libraries, headers and packages, never programs. Paths with `/`, as cmake reads them on
-  /// Windows too.
+  /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and as where to find
+  /// libraries, headers and packages, never programs, the sysroot (for Apple, the SDK in SDKROOT)
+  /// and cargo's build folder. Paths with `/`, as cmake reads them on Windows too.
   pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)]) -> String {
     let path = |x: &Path| x.to_string_lossy().replace('\\', "/");
-    let (system, cpu, sysroot) = match self.libc {
-      // As cmake-rs names it.
-      Libc::Mingw => ("Windows", "AMD64", dir.join("usr")),
-      _ => ("Linux", self.rust.split('-').next().unwrap_or_default(), dir.to_path_buf()),
+    let arch = |x: &'static str| x.split('-').next().unwrap_or_default();
+    // As cmake-rs names them.
+    let (system, cpu) = match self.libc {
+      Libc::Mingw => ("Windows", "AMD64"),
+      Libc::Darwin => ("Darwin", arch(self.clang)),
+      _ => ("Linux", arch(self.rust)),
     };
 
     let mut out = format!("# cargo-solo's for {}\n", self.rust);
     out += &format!("set(CMAKE_SYSTEM_NAME {system})\nset(CMAKE_SYSTEM_PROCESSOR {cpu})\n");
-    out += &format!("set(CMAKE_SYSROOT \"{}\")\n", path(&sysroot));
-    if self.libc == Libc::Mingw {
-      // mingw-w64's libraries are in its own folder of the sysroot.
-      out += &format!("set(CMAKE_FIND_ROOT_PATH \"{}\")\n", path(&sysroot.join(self.clang)));
+    match self.libc {
+      Libc::Mingw => {
+        let usr = dir.join("usr");
+        out += &format!("set(CMAKE_SYSROOT \"{}\")\n", path(&usr));
+        // mingw-w64's libraries are in its own folder of the sysroot.
+        out += &format!("set(CMAKE_FIND_ROOT_PATH \"{}\")\n", path(&usr.join(self.clang)));
+      }
+      Libc::Darwin => out += CMAKE_SDK,
+      _ => out += &format!("set(CMAKE_SYSROOT \"{}\")\n", path(dir)),
     }
 
     for (name, x) in tools {
@@ -268,6 +275,7 @@ impl Target {
     }
 
     out += &CMAKE_CXX.replace("NAMES", &self.names("CXX").join(" "));
+    out += CMAKE_BUILD;
     let modes =
       [("PROGRAM", "NEVER"), ("LIBRARY", "ONLY"), ("INCLUDE", "ONLY"), ("PACKAGE", "ONLY")];
     for (kind, mode) in modes {
@@ -286,6 +294,23 @@ const CMAKE_CXX: &str = r#"foreach(x NAMES)
     break()
   endif()
 endforeach()
+"#;
+
+/// The toolchain file's SDK for Apple, the wrapper's: SDKROOT, cargo-solo's or the user's, which
+/// cmake reads itself only as a path with `/`.
+const CMAKE_SDK: &str = r#"file(TO_CMAKE_PATH "$ENV{SDKROOT}" CMAKE_OSX_SYSROOT)
+set(CMAKE_FIND_ROOT_PATH "${CMAKE_OSX_SYSROOT}")
+"#;
+
+/// The toolchain file's folder of cargo's build scripts, three up from OUT_DIR's, to find in too:
+/// another crate's build script puts what this one's cmake finds there, as libz-sys its zlib for
+/// rdkafka-sys. The sysroot alone as the root would move those paths under it.
+const CMAKE_BUILD: &str = r#"if(DEFINED ENV{OUT_DIR})
+  file(TO_CMAKE_PATH "$ENV{OUT_DIR}/../../.." _cargo_solo_build)
+  get_filename_component(_cargo_solo_build "${_cargo_solo_build}" ABSOLUTE)
+  list(APPEND CMAKE_FIND_ROOT_PATH "${_cargo_solo_build}")
+  unset(_cargo_solo_build)
+endif()
 "#;
 
 /// Whether clang only compiles with `args`, links nothing.
@@ -357,7 +382,7 @@ impl Host {
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
   /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, its
-  /// [C++ and cmake](Host::cxx) but for Apple, for Windows aws-lc-sys's NASM objects, for Apple the
+  /// [C++ and cmake](Host::cxx), for Windows aws-lc-sys's NASM objects, for Apple the
   /// [SDK and the oldest macOS](Host::darwin), unless the user chose in cargo's `args`, config or
   /// environment.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
@@ -380,9 +405,7 @@ impl Host {
     let mut out = target.env(&cc, &ar).to_vec();
     out.extend(darwin);
     let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
-    if target.cxx.is_some() {
-      out.extend(self.cxx(target, &sysroot, [&cc, &cxx], &dir, args)?);
-    }
+    out.extend(self.cxx(target, &sysroot, [&cc, &cxx], &dir, args)?);
 
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
@@ -444,8 +467,8 @@ impl Host {
   }
 
   /// The environment for `target`'s C++ and cmake, with its `sysroot`, wrappers and the folder of
-  /// its [tools](tools): `CXX_<t>` the
-  /// wrapper as clang++, `CMAKE_TOOLCHAIN_FILE_<t>` the target's toolchain file, and on a Windows
+  /// its [tools](tools): `CXX_<t>` the wrapper as clang++, but for Apple, which has no C++
+  /// library, `CMAKE_TOOLCHAIN_FILE_<t>` the target's toolchain file, and on a Windows
   /// host with ninja on PATH, Ninja for cmake's generator, where cmake-rs would take Visual Studio
   /// or MinGW's make; each unless the user chose.
   fn cxx(
@@ -466,9 +489,15 @@ impl Host {
     };
 
     let mut out = vec![];
-    if let Some(name) = free("CXX", false) {
+    if target.cxx.is_some()
+      && let Some(name) = free("CXX", false)
+    {
       out.push((name, cxx.into()));
     }
+
+    // For Apple, cmake's C++ compiler is the C one, which compiles the C++ that needs no library,
+    // as cmake's check of its C++ compiler does.
+    let cxx = if target.cxx.is_some() { cxx } else { cc };
 
     if let Some(name) = free("CMAKE_TOOLCHAIN_FILE", true) {
       let (ar, nm) = (self.bin.join(exe("llvm-ar")), self.bin.join(exe("llvm-nm")));
@@ -948,7 +977,8 @@ mod tests {
     assert!(text.contains("set(CMAKE_SYSTEM_NAME Linux)\nset(CMAKE_SYSTEM_PROCESSOR aarch64)\n"));
     assert!(text.contains("set(CMAKE_SYSROOT \"/c/sr\")\nset(CMAKE_C_COMPILER \"/c/b/cc\")\n"));
     assert!(text.contains("set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"));
-    assert!(!text.contains("CMAKE_FIND_ROOT_PATH "));
+    assert!(!text.contains("set(CMAKE_FIND_ROOT_PATH "));
+    assert!(text.contains("list(APPEND CMAKE_FIND_ROOT_PATH \"${_cargo_solo_build}\")\n"));
     let names = "CXX_aarch64-unknown-linux-gnu CXX_aarch64_unknown_linux_gnu TARGET_CXX";
     assert!(text.contains(&format!("foreach(x {names})\n")));
 
@@ -957,5 +987,11 @@ mod tests {
     assert!(text.contains("set(CMAKE_SYSTEM_NAME Windows)\nset(CMAKE_SYSTEM_PROCESSOR AMD64)\n"));
     assert!(text.contains("set(CMAKE_FIND_ROOT_PATH \"C:/c/sr/usr/x86_64-w64-mingw32\")\n"));
     assert!(text.contains("set(CMAKE_AR \"C:/r/llvm-ar.exe\")\n"));
+
+    let mac = TARGETS.iter().find(|x| x.rust == "aarch64-apple-darwin").unwrap();
+    let text = mac.cmake(Path::new("/c/sdk"), &[("CXX_COMPILER", Path::new("/c/b/cc"))]);
+    assert!(text.contains("set(CMAKE_SYSTEM_NAME Darwin)\nset(CMAKE_SYSTEM_PROCESSOR arm64)\n"));
+    assert!(text.contains("file(TO_CMAKE_PATH \"$ENV{SDKROOT}\" CMAKE_OSX_SYSROOT)\n"));
+    assert!(!text.contains("/c/sdk") && !text.contains("CMAKE_SYSROOT"));
   }
 }

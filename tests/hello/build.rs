@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-//! Compiles the C half of the test crate through cc, as a crate's C dependency is, and links a C
-//! program as a configure script does (jemalloc's, for one).
+//! Compiles the C half of the test crate through cc, as a crate's C dependency is, links a C
+//! program as a configure script does (jemalloc's, for one), and builds a C library through
+//! cmake-rs.
 
 use std::env;
 use std::path::PathBuf;
@@ -19,6 +20,13 @@ fn main() {
   let link = ["src/configure.c", "-lconfigure", "-o"];
   run(cc().arg("-L").arg(&out).args(link).arg(out.join("configure")));
   println!("cargo:rerun-if-changed=src/configure.c");
+
+  // It finds libconfigure.a by the path given, as rdkafka-sys's finds libz-sys's zlib.
+  let path = out.to_string_lossy().replace('\\', "/");
+  let dir = cmake::Config::new("cmake").define("CMAKE_LIBRARY_PATH", path).build();
+  println!("cargo:rustc-link-search=native={}", dir.join("lib").display());
+  println!("cargo:rustc-link-lib=static=hello_cmake");
+  println!("cargo:rerun-if-changed=cmake");
 }
 
 fn run(cmd: &mut Command) {
