@@ -60,11 +60,18 @@ def runs(target: str, dir: Path) -> list[tuple[str, int, str]]:
         for x in files:
             x.chmod(x.stat().st_mode | 0o111)
 
-    def one(cmd: list[str]) -> tuple[int, str]:
+    def one(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
         try:
-            rs = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            return -1, "timeout"
+            rs = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            # what it printed before, in bytes whatever `text`
+            got = (
+                x.decode(errors="replace") if isinstance(x, bytes) else x or ""
+                for x in (e.stdout, e.stderr)
+            )
+            return -1, f"{''.join(got).strip()}\ntimeout"
+        except OSError as e:
+            return -1, str(e)
         return rs.returncode, (rs.stdout + rs.stderr).strip()
 
     if "-linux-" in target and sys.platform == "linux":
@@ -72,9 +79,13 @@ def runs(target: str, dir: Path) -> list[tuple[str, int, str]]:
         image = "debian:buster" if target.endswith("-gnu") else "alpine"
         loop = 'for f in /b/*; do echo "@@ $(basename $f)"; "$f" 2>&1; echo "@@rc $?"; done'
         cmd = ["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{dir}:/b:ro"]
-        _, text = one([*cmd, image, "sh", "-c", loop])
+        rc, text = one([*cmd, image, "sh", "-c", loop], timeout=300 * max(len(files), 1))
         got = re.findall(r"^@@ (\S+)\n(.*?)^@@rc (\d+)$", text + "\n", re.M | re.S)
-        return [(name, int(rc), body.strip()[-600:]) for name, body, rc in got]
+        out = [(name, int(code), body.strip()[-600:]) for name, body, code in got]
+        # those the batch didn't get to, with why: a timeout, docker's error
+        done = {x[0] for x in out}
+        why = f"not run, docker exited {rc}: {text[-600:]}"
+        return out + [(x.name, -1, why) for x in files if x.name not in done]
 
     out = []
     if "-windows-" in target and sys.platform == "win32":
