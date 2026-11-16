@@ -318,21 +318,26 @@ impl Target {
 }
 
 /// The toolchain file's C++ compiler, cc's: the first of cc's variables (NAMES) set, the user's or
-/// cargo-solo's wrapper, read as cc reads it: a path, or else words, the compiler first, or second
-/// after a wrapper such as sccache, which runs it. cmake-rs passes no compiler with a toolchain
-/// file, but cc's flags, those words' too.
+/// cargo-solo's wrapper, read as cc reads it: a path, or else words, the compiler and its flags,
+/// after a wrapper cc knows, such as sccache, which runs it. cmake-rs passes no compiler with a
+/// toolchain file, nor those flags.
 const CMAKE_CXX: &str = r#"foreach(x NAMES)
   if(DEFINED ENV{${x}})
     file(TO_CMAKE_PATH "$ENV{${x}}" CMAKE_CXX_COMPILER)
-    string(REGEX MATCHALL "[^ \t]+" _cargo_solo_cxx "${CMAKE_CXX_COMPILER}")
-    if(NOT EXISTS "${CMAKE_CXX_COMPILER}" AND _cargo_solo_cxx)
-      list(GET _cargo_solo_cxx 0 CMAKE_CXX_COMPILER)
-      list(LENGTH _cargo_solo_cxx _cargo_solo_n)
-      get_filename_component(_cargo_solo_name "${CMAKE_CXX_COMPILER}" NAME_WE)
+    if(NOT EXISTS "${CMAKE_CXX_COMPILER}")
+      string(REGEX MATCHALL "[^ \t]+" CMAKE_CXX_COMPILER "$ENV{${x}}")
+    endif()
+    list(LENGTH CMAKE_CXX_COMPILER _cargo_solo_n)
+    if(_cargo_solo_n GREATER 1)
+      set(_cargo_solo_wrappers WRAPPERS "$ENV{CC_KNOWN_WRAPPER_CUSTOM}")
+      string(TOLOWER "${_cargo_solo_wrappers}" _cargo_solo_wrappers)
+      list(GET CMAKE_CXX_COMPILER 0 _cargo_solo_name)
+      get_filename_component(_cargo_solo_name "${_cargo_solo_name}" NAME_WE)
       string(TOLOWER "${_cargo_solo_name}" _cargo_solo_name)
-      if(_cargo_solo_n GREATER 1 AND _cargo_solo_name MATCHES "^(WRAPPERS)$")
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${CMAKE_CXX_COMPILER}")
-        list(GET _cargo_solo_cxx 1 CMAKE_CXX_COMPILER)
+      list(FIND _cargo_solo_wrappers "${_cargo_solo_name}" _cargo_solo_i)
+      if(_cargo_solo_i GREATER -1)
+        list(GET CMAKE_CXX_COMPILER 0 CMAKE_CXX_COMPILER_LAUNCHER)
+        list(REMOVE_AT CMAKE_CXX_COMPILER 0)
       endif()
     endif()
     break()
@@ -341,7 +346,7 @@ endforeach()
 "#;
 
 /// The wrappers cc knows, in [CMAKE_CXX].
-const WRAPPERS: &str = "ccache|distcc|sccache|icecc|cachepot|buildcache|kache";
+const WRAPPERS: &str = "ccache distcc sccache icecc cachepot buildcache kache";
 
 /// The toolchain file's SDK for Apple, the wrapper's: SDKROOT, cargo-solo's or the user's, which
 /// cmake reads itself only as a path with `/`.
