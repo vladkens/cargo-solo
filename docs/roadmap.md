@@ -9,7 +9,7 @@ The maintainer's backlog, in order: each item is done as a plan in `docs/plans/`
 - [ ] **C++ and cmake.** `CXX_<t>` through the wrapper with Debian's libstdc++, and a cmake toolchain file per target (`CMAKE_TOOLCHAIN_FILE_<t>`), as cargo-zigbuild, cross, cargo-xwin and zijiren233/cargo-cross all have. aws-lc-sys and ghstats need neither: aws-lc-sys builds through cc unless asked for cmake.
 - [ ] **The target from cargo config.** With no `--target`, set up the one in `build.target` of `.cargo/config.toml` or `CARGO_BUILD_TARGET`, as cargo-zigbuild, cargo-xwin and zijiren233/cargo-cross do; such a build now runs with the host's C compiler.
 - [ ] **The user's `CC_<t>` wins.** Set `CC_<t>`, `AR_<t>` and the linker only when the user hasn't, as cargo-zigbuild does.
-- [ ] **Apple's targets from Linux and Windows: a study first.** How Zig links them with its own stubs of macOS's libSystem, what needs Apple's SDK (the frameworks) and how a user would bring it, whether rust-lld's Mach-O linker and the host's clang are enough. A plan, no code.
+- [x] **Apple's targets from Linux and Windows.** `aarch64-apple-darwin` and `x86_64-apple-darwin` on Linux and Windows hosts: macOS's headers and libSystem's stub from Zig's source tarball (Zig never runs), the host's clang 18 or newer, rustup's `ld64.lld`. No frameworks: the user's `SDKROOT` or a macOS runner covers them. Plan: [20261116-apple.md](plans/completed/20261116-apple.md).
 
 Each of these changes the CLI:
 

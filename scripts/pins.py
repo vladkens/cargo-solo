@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Re-pins the packages in src/packages.rs to what Debian and rustup have now (`make pins`).
+"""Re-pins the packages in src/packages.rs to what Debian, rustup and Zig have now (`make pins`).
 
 uv run scripts/pins.py
 
@@ -10,9 +10,10 @@ A Debian package is `Package::deb(TRIXIE, "<pool path>", "<sha256>")`: its relea
 table's name, its name and arch are in the file name; a new one can have the empty hash. A
 release's snapshot.debian.org mirror moves to the latest snapshot when one of its packages
 changes. A snapshot lags Debian by up to six hours: until it has the new packages, nothing is
-written.
+written. Zig's source tarball, Apple's SDK, moves to Zig's latest release.
 """
 
+import json
 import lzma
 import re
 import sys
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "packages.rs"
 MANIFEST = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
 MINGW = "x86_64-pc-windows-gnu"
+ZIG_INDEX = "https://ziglang.org/download/index.json"
 
 TABLE = re.compile(r"const (\w+): &\[&str\] =\s*&\[(.*?)\];", re.S)
 DEB = re.compile(r'Package::deb\(\s*(\w+),\s*"([^"]+)",\s*"([0-9a-f]*)",?\s*\)')
@@ -33,6 +35,7 @@ SNAPSHOT = re.compile(r"https://snapshot\.debian\.org/archive/([\w-]+)/(\d{8}T\d
 RUST_MINGW = re.compile(
     r'mirrors: RUSTUP,\s*path: "([^"]+)",\s*sha256: "([0-9a-f]*)",\s*root: "([^"]+)"'
 )
+ZIG = re.compile(r'path: "zig-([\d.]+)\.tar\.xz",\s*sha256: "([0-9a-f]*)"')
 
 
 def log(msg: str):
@@ -145,13 +148,36 @@ def rustup(src: str) -> str:
     return src.replace(m[0], block)
 
 
+# MARK: Zig
+
+
+def zig(src: str) -> str:
+    ver, sha = ZIG.search(src).groups()
+
+    log(f"reading {ZIG_INDEX}")
+    rels = json.loads(get(ZIG_INDEX).read())
+    vers = [x for x in rels if re.fullmatch(r"\d+\.\d+\.\d+", x)]
+    new = max(vers, key=lambda x: tuple(map(int, x.split("."))))
+    tarball, new_sha = rels[new]["src"]["tarball"], rels[new]["src"]["shasum"]
+    if (new, new_sha) == (ver, sha):
+        return src
+
+    if tarball != f"https://ziglang.org/download/{new}/zig-{new}.tar.xz":
+        sys.exit(f"pins: zig {new}'s source is {tarball}, pin it by hand")
+
+    log(f"zig: {ver} -> {new}, check Libc::version's SDK and readme.md")
+    # the mirror, the file, and the roots, which start with the archive's top folder
+    src = src.replace(f'/download/{ver}"', f'/download/{new}"').replace(f"zig-{ver}", f"zig-{new}")
+    return src.replace(f'"{sha}"', f'"{new_sha}"')
+
+
 def main():
     src = SRC.read_text()
 
     # only the tables' block: the tests have packages too
     start = src.index("// MARK: Packages")
     end = src.index("// MARK:", start + 1)
-    new = src[:start] + rustup(debian(src[start:end])) + src[end:]
+    new = src[:start] + zig(rustup(debian(src[start:end]))) + src[end:]
     if new == src:
         log("all current")
         return

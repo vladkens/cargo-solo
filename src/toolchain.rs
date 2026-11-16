@@ -19,6 +19,12 @@ const GCC_LD: &str = "CARGO_SOLO_GCC_LD";
 /// aws-lc-sys, rustls' crypto, assembles x86_64 Windows' code with nasm, which a host seldom has;
 /// this lets it take the objects it ships instead, when there's no nasm.
 const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
+/// Apple's SDK, which build scripts read, and the wrapper: cargo-solo's, or the user's, with its
+/// frameworks.
+const SDKROOT: &str = "SDKROOT";
+/// The oldest macOS an Apple binary runs on, which rustc and cc-rs read: without it, cc-rs off a
+/// Mac passes 10.7 for x86_64.
+const DEPLOYMENT_TARGET: &str = "MACOSX_DEPLOYMENT_TARGET";
 
 // MARK: Targets
 
@@ -26,13 +32,13 @@ const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
 #[derive(Debug)]
 pub struct Target {
   pub rust: &'static str,
-  /// clang's `--target`, Debian's multiarch name for it, and its sysroot's folder name.
+  /// clang's `--target`; for Linux and Windows, Debian's multiarch name for it too.
   pub clang: &'static str,
   pub libc: Libc,
   pub packages: &'static [Package],
 }
 
-pub const TARGETS: [Target; 5] = [
+pub const TARGETS: [Target; 7] = [
   Target {
     rust: "x86_64-unknown-linux-gnu",
     clang: "x86_64-linux-gnu",
@@ -63,12 +69,38 @@ pub const TARGETS: [Target; 5] = [
     libc: Libc::Mingw,
     packages: packages::MINGW_X64,
   },
+  Target {
+    rust: "aarch64-apple-darwin",
+    clang: "arm64-apple-macos",
+    libc: Libc::Darwin,
+    packages: packages::DARWIN,
+  },
+  Target {
+    rust: "x86_64-apple-darwin",
+    clang: "x86_64-apple-macos",
+    libc: Libc::Darwin,
+    packages: packages::DARWIN,
+  },
 ];
 
 impl Target {
-  /// The target Rust calls `name`, when cargo-solo sets it up.
+  /// The target Rust calls `name`, when cargo-solo sets it up on this host.
   pub fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().find(|x| x.rust == name)
+    TARGETS.iter().find(|x| x.rust == name && x.here())
+  }
+
+  /// Whether cargo-solo sets it up on this host: on a Mac, Apple's targets are cargo's own, with
+  /// Xcode's SDK.
+  pub fn here(&self) -> bool {
+    self.libc != Libc::Darwin || env::consts::OS != "macos"
+  }
+
+  /// Its sysroot's folder name in the cache: Apple's targets share one, as `SDKROOT` names one.
+  pub fn sysroot(&self) -> &'static str {
+    match self.libc {
+      Libc::Darwin => "macos",
+      _ => self.clang,
+    }
   }
 
   /// The target whose wrapper `arg0` runs: `<target>-clang`.
@@ -90,14 +122,18 @@ impl Target {
   }
 
   /// The flags the wrapper puts after clang's `args`, so that they win over the `--target` cc-rs
-  /// passes: the target and the sysroot at `dir`, and to link, rustup's lld from `gcc_ld`.
+  /// passes: the target and the sysroot at `dir`, and to link, rustup's lld from `gcc_ld`, which
+  /// clang runs as `ld64.lld` for Apple's targets.
   pub fn flags(&self, dir: &Path, gcc_ld: &Path, args: &[OsString]) -> Vec<OsString> {
-    let sysroot = match self.libc {
-      Libc::Mingw => dir.join("usr"),
-      _ => dir.to_path_buf(),
-    };
+    let mut out = vec![format!("--target={}", self.clang).into()];
+    match self.libc {
+      Libc::Mingw => out.push(cat("--sysroot=", &dir.join("usr"))),
+      // An SDK, as Xcode's clang takes it: for Apple, a -isysroot that cc-rs passes would win over
+      // a --sysroot.
+      Libc::Darwin => out.extend(["-isysroot".into(), dir.into()]),
+      _ => out.push(cat("--sysroot=", dir)),
+    }
 
-    let mut out = vec![format!("--target={}", self.clang).into(), cat("--sysroot=", &sysroot)];
     if self.libc == Libc::Musl {
       // ring passes -nostdlibinc for musl, which drops the sysroot's headers; the kernel's asm/ is
       // Debian's, under glibc's name.
@@ -177,18 +213,25 @@ impl Host {
   }
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it, and for Windows, rustc's dlltool in front of
-  /// PATH and aws-lc-sys's NASM objects, unless the user chose in cargo's `args`, config or
-  /// environment.
+  /// gives the environment cargo runs with for it: for Windows, rustc's dlltool in front of PATH
+  /// and aws-lc-sys's NASM objects, for Apple, the [SDK and the oldest macOS](Host::darwin), unless
+  /// the user chose in cargo's `args`, config or environment.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
+    // First, as it checks the tools before any download.
+    let darwin = match target.libc {
+      Libc::Darwin => self.darwin(target, args)?,
+      _ => vec![],
+    };
+
     if !self.sysroot.join("lib/rustlib").join(target.rust).join("lib").is_dir() {
       rustup(&self.sysroot, &["target", "add", target.rust])?;
     }
 
-    let sysroot = packages::ensure(&self.cache, target.clang, target.packages)?;
+    let sysroot = packages::ensure(&self.cache, target.sysroot(), target.packages)?;
     let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
     let ar = self.bin.join(exe("llvm-ar"));
     let mut out = target.env(&cc, &ar).to_vec();
+    out.extend(darwin);
     if target.libc != Libc::Mingw {
       return Ok(out);
     }
@@ -202,6 +245,50 @@ impl Host {
       out.push((nasm, "1".into()));
     }
 
+    Ok(out)
+  }
+
+  /// For Apple's `target`: [SDKROOT], its sysroot, and [DEPLOYMENT_TARGET], the oldest of rustc's
+  /// for Apple, each unless the user chose it. Neither has a name per target, so one value serves
+  /// both: rustc and clang raise x86_64's 10.12 to arm64's minimum, 11.0.
+  fn darwin(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
+    let gcc_ld = self.bin.join("gcc-ld");
+    if !gcc_ld.join(exe("ld64.lld")).is_file() {
+      return Err(bad(format!("no ld64.lld in {}", gcc_ld.display())));
+    }
+
+    // The SDK's TargetConditionals.h fails on an older clang: "KernelKit requires
+    // -fdefine_target_os_macros".
+    let text = run(Command::new(&self.clang).arg("--version"))?;
+    let text = String::from_utf8_lossy(&text);
+    if major(&text).is_some_and(|x| x < 18) {
+      let line = text.lines().next().unwrap_or_default();
+      return Err(bad(format!("Apple's targets need clang 18 or newer, not {line}")));
+    }
+
+    let here = env::current_dir()?;
+    let mut out = vec![];
+    if !chosen(&[SDKROOT], args, &here) {
+      let sdk = packages::dir(&self.cache, target.sysroot(), target.packages);
+      out.push((SDKROOT.into(), sdk.into()));
+    }
+
+    if chosen(&[DEPLOYMENT_TARGET], args, &here) {
+      return Ok(out);
+    }
+
+    let rustc = self.sysroot.join("bin").join(exe("rustc"));
+    let mut vers = vec![];
+    for apple in TARGETS.iter().filter(|x| x.libc == Libc::Darwin) {
+      let line = ["--print", "deployment-target", "--target", apple.rust];
+      let text = run(Command::new(&rustc).args(line))?;
+      let text = String::from_utf8_lossy(&text);
+      let ver = text.trim().split_once('=').map(|x| x.1.to_string());
+      vers.push(ver.ok_or_else(|| bad(format!("rustc's deployment target: {text}")))?);
+    }
+
+    let key = |x: &String| x.split('.').map(|x| x.parse().unwrap_or(0)).collect::<Vec<u32>>();
+    out.extend(vers.into_iter().min_by_key(key).map(|x| (DEPLOYMENT_TARGET.into(), x.into())));
     Ok(out)
   }
 }
@@ -226,6 +313,11 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
   let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
   let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
   texts.any(|x| x.lines().any(|x| named(code(x))))
+}
+
+/// The major version in `clang --version`'s `text`.
+fn major(text: &str) -> Option<u32> {
+  text.split("clang version ").nth(1)?.split('.').next()?.parse().ok()
 }
 
 /// A TOML `line` without its comment, from the first `#` outside quotes.
@@ -373,7 +465,12 @@ pub fn wrap(target: &Target, args: Vec<OsString>) -> io::Result<Command> {
   };
 
   let (clang, gcc_ld) = (var(CLANG)?, var(GCC_LD)?);
-  let dir = packages::dir(&packages::cache()?, target.clang, target.packages);
+  let sdk = env::var_os(SDKROOT).filter(|x| target.libc == Libc::Darwin && !x.is_empty());
+  let dir = match sdk {
+    Some(x) => PathBuf::from(x),
+    None => packages::dir(&packages::cache()?, target.sysroot(), target.packages),
+  };
+
   let flags = target.flags(&dir, Path::new(&gcc_ld), &args);
   let mut cmd = Command::new(clang);
   cmd.args(args).args(flags);
@@ -405,8 +502,11 @@ mod tests {
     assert_eq!(got("x86_64-unknown-linux-gnu-clang"), gnu);
     assert_eq!(got("C:/cache/bin/x86_64-pc-windows-gnu-clang.exe"), Some("x86_64-pc-windows-gnu"));
     assert_eq!(got("/usr/bin/clang"), None);
-    assert_eq!(got("aarch64-apple-darwin-clang"), None);
+    assert_eq!(got("aarch64-linux-android-clang"), None);
     assert_eq!(got("cargo-solo"), None);
+    // On a Mac, Apple's targets are cargo's.
+    let apple = (env::consts::OS != "macos").then_some("aarch64-apple-darwin");
+    assert_eq!(got("aarch64-apple-darwin-clang"), apple);
   }
 
   #[test]
@@ -444,10 +544,18 @@ mod tests {
   }
 
   #[test]
+  fn major_reads_clang_s_version() {
+    assert_eq!(major("Debian clang version 14.0.6\nTarget: aarch64-unknown-linux-gnu"), Some(14));
+    assert_eq!(major("Ubuntu clang version 18.1.3 (1ubuntu1)"), Some(18));
+    assert_eq!(major("clang version 19.1.5\nTarget: x86_64-pc-windows-msvc"), Some(19));
+    assert_eq!(major("gcc (GCC) 14.2.0"), None);
+  }
+
+  #[test]
   fn flags_link_with_lld_only_when_linking() {
     let (dir, gcc_ld) = (Path::new("/c/sr"), Path::new("/r/gcc-ld"));
     let flags = |name, line| {
-      let target = Target::find(name).unwrap();
+      let target = TARGETS.iter().find(|x| x.rust == name).unwrap();
       let got = target.flags(dir, gcc_ld, &args(line));
       got.iter().map(|x| x.to_str().unwrap().replace('\\', "/")).collect::<Vec<_>>().join(" ")
     };
@@ -467,5 +575,21 @@ mod tests {
 
     let mingw = format!("--target=x86_64-w64-mingw32 --sysroot=/c/sr/usr {link}");
     assert_eq!(flags("x86_64-pc-windows-gnu", "a.o -o a.exe"), mingw);
+
+    let mac = "--target=arm64-apple-macos -isysroot /c/sr";
+    assert_eq!(flags("aarch64-apple-darwin", "-c a.c -isysroot /x"), mac);
+    assert_eq!(flags("aarch64-apple-darwin", "a.o -o a -lSystem"), format!("{mac} {link}"));
+    let x64 = format!("--target=x86_64-apple-macos -isysroot /c/sr {link}");
+    assert_eq!(flags("x86_64-apple-darwin", "a.o -o a"), x64);
+  }
+
+  #[test]
+  fn apple_s_targets_share_a_sysroot() {
+    let apple: Vec<_> = TARGETS.iter().filter(|x| x.libc == Libc::Darwin).collect();
+    assert_eq!(apple.len(), 2);
+    assert!(
+      apple.iter().all(|x| x.sysroot() == "macos" && x.here() == (env::consts::OS != "macos"))
+    );
+    assert_eq!(Target::find("x86_64-unknown-linux-gnu").unwrap().sysroot(), "x86_64-linux-gnu");
   }
 }

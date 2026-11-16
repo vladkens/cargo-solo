@@ -53,9 +53,10 @@ fn targets(args: &[OsString]) -> Vec<String> {
 
 /// The help, with the cache folder `cache`.
 pub fn help(cache: &str) -> String {
-  let width = TARGETS.iter().map(|x| x.rust.len()).max().unwrap_or(0);
+  let ours = || TARGETS.iter().filter(|x| x.here());
+  let width = ours().map(|x| x.rust.len()).max().unwrap_or(0);
   let targets: String =
-    TARGETS.iter().map(|x| format!("  {:width$}  {}\n", x.rust, x.libc.version())).collect();
+    ours().map(|x| format!("  {:width$}  {}\n", x.rust, x.libc.version())).collect();
 
   format!(
     "Cross-compiles Rust with the host's clang and rustup's lld: no Zig, no Docker.
@@ -68,7 +69,8 @@ Usage: cargo solo <cargo command> [args]...
 Each of these --targets gets its C compiler, linker and libc; any other goes to cargo as is:
 {targets}
 Needs clang, and rustup to add a target or llvm-tools when missing. Each target's libc comes from
-Debian's packages on first use, cached in {cache} (CARGO_SOLO_CACHE).
+Debian's packages (Apple's SDK from Zig's source) on first use, cached in
+{cache} (CARGO_SOLO_CACHE).
 "
   )
 }
@@ -116,10 +118,10 @@ mod tests {
   }
 
   #[test]
-  fn help_lists_every_target() {
+  fn help_lists_every_target_of_this_host() {
     let text = help("/tmp/cache");
     for target in &TARGETS {
-      assert!(text.contains(target.rust), "{}", target.rust);
+      assert_eq!(text.contains(target.rust), target.here(), "{}", target.rust);
     }
 
     assert!(text.contains("/tmp/cache"));

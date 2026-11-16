@@ -1,7 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
 //! The sysroots: each target's libc, headers and libraries from Debian's packages (mingw's libgcc
-//! from rustup's), pinned by SHA-256, fetched by the system's `curl` on first use and unpacked into
-//! the cache.
+//! from rustup's, Apple's SDK from Zig's source), pinned by SHA-256, fetched by the system's `curl`
+//! on first use and unpacked into the cache.
 
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
@@ -24,6 +24,7 @@ pub enum Libc {
   Glibc,
   Musl,
   Mingw,
+  Darwin,
 }
 
 impl Libc {
@@ -33,6 +34,7 @@ impl Libc {
       Libc::Glibc => "glibc 2.28",
       Libc::Musl => "musl 1.2.5",
       Libc::Mingw => "mingw-w64 12.0",
+      Libc::Darwin => "libSystem, SDK 27.0",
     }
   }
 }
@@ -75,6 +77,9 @@ const TRIXIE: &[&str] =
 
 const RUSTUP: &[&str] = &["https://static.rust-lang.org"];
 
+/// Zig's releases on ziglang.org, and a community mirror Zig lists, which serves the same files.
+const ZIG: &[&str] = &["https://ziglang.org/download/0.17.1", "https://pkg.hexops.org/zig"];
+
 impl Package {
   const fn deb(
     mirrors: &'static [&'static str],
@@ -82,6 +87,19 @@ impl Package {
     sha256: &'static str,
   ) -> Package {
     Package { mirrors, path, sha256, root: "", keep: DEB_KEEP, into: "" }
+  }
+
+  /// The files of Zig's source tarball under `root` that start with one of `keep`, put under
+  /// `into`.
+  const fn zig(root: &'static str, keep: &'static [&'static str], into: &'static str) -> Package {
+    Package {
+      mirrors: ZIG,
+      path: "zig-0.17.1.tar.xz",
+      sha256: "1e89bf06610b769a8c77676c6c8d54b093a0db60f4891f2f91014829012f0e24",
+      root,
+      keep,
+      into,
+    }
   }
 }
 
@@ -194,6 +212,35 @@ pub const MINGW_X64: &[Package] = &[
   },
 ];
 
+/// Apple's SDK for both arches, laid out as Xcode's is, from Zig's source: macOS's headers, and
+/// libSystem's `.tbd`, the text stub that lists what it exports, which is all a link needs. Not
+/// Zig's `SDKSettings.json`, which clang warns of on every file: it lacks a key clang requires.
+pub const DARWIN: &[Package] = &[
+  Package::zig("zig-0.17.1/lib/libc/include/any-darwin-any/", &[""], "usr/include/"),
+  Package::zig("zig-0.17.1/lib/libc/darwin/", &["libSystem.tbd"], "usr/lib/"),
+];
+
+/// The libraries an SDK has as links to libSystem, which has them all: the libc crate links `-lc`
+/// and `-lm`.
+const LIBSYSTEM_ALIASES: &[&str] =
+  &["c", "dbm", "dl", "gcc_s.1", "info", "m", "mx", "mx.A", "poll", "proc", "pthread", "rpcsvc"];
+
+/// A stub of macOS's libiconv, which the libc crate links for Apple's targets and Zig's source
+/// doesn't have: the functions of `iconv.h`.
+const LIBICONV: &str = "--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos, arm64e-macos ]
+install-name:    '/usr/lib/libiconv.2.dylib'
+current-version: 7
+compatibility-version: 7
+exports:
+  - targets:         [ x86_64-macos, arm64-macos, arm64e-macos ]
+    symbols:         [ __libiconv_version, _iconv, _iconv_canonicalize, _iconv_close,
+                       _iconv_open, _iconv_open_into, _iconvctl, _iconvlist,
+                       _libiconv_set_relocation_prefix ]
+...
+";
+
 // MARK: Cache
 
 /// The cache folder: `CARGO_SOLO_CACHE`, else `~/Library/Caches/cargo-solo` on macOS,
@@ -264,23 +311,49 @@ fn sweep(tmp: &Path) {
   }
 }
 
-/// `packages` fetched and unpacked into `root`, their links put in place last.
+/// `packages` fetched and unpacked into `root`, their links put in place last, and Apple's SDK
+/// completed.
 fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
   fs::create_dir_all(root)?;
   let mut links = vec![];
+  // Packages in a row that are parts of one file share its download.
+  let mut last: Option<(&str, Vec<u8>)> = None;
   for pkg in packages {
     let file = pkg.path.rsplit('/').next().unwrap_or(pkg.path);
     let at = |e: io::Error| io::Error::new(e.kind(), format!("{file}: {e}"));
-    let data = fetch(pkg, &root.join(".download")).map_err(at)?;
-    let tar = match file.ends_with(".deb") {
-      true => member(&data, "data.tar.xz").and_then(xz),
-      false => xz(&data),
+    let tar = match last.take() {
+      Some((path, tar)) if path == pkg.path => tar,
+      _ => {
+        let data = fetch(pkg, &root.join(".download")).map_err(at)?;
+        let tar = match file.ends_with(".deb") {
+          true => member(&data, "data.tar.xz").and_then(xz),
+          false => xz(&data),
+        };
+
+        tar.map_err(at)?
+      }
     };
 
-    links.extend(unpack(&tar.map_err(at)?, pkg, root).map_err(at)?);
+    links.extend(unpack(&tar, pkg, root).map_err(at)?);
+    last = Some((pkg.path, tar));
   }
 
-  materialize(root, links)
+  materialize(root, links)?;
+  if root.join("usr/lib/libSystem.tbd").is_file() {
+    sdk(root)?;
+  }
+
+  Ok(())
+}
+
+/// What Apple's SDK at `root` has beside Zig's files: libSystem's aliases, and libiconv.
+fn sdk(root: &Path) -> io::Result<()> {
+  let lib = root.join("usr/lib");
+  for name in LIBSYSTEM_ALIASES {
+    copy(&lib.join("libSystem.tbd"), &lib.join(format!("lib{name}.tbd")))?;
+  }
+
+  fs::write(lib.join("libiconv.tbd"), LIBICONV)
 }
 
 // MARK: Fetch
@@ -517,10 +590,13 @@ mod tests {
       assert!(pkg.root.is_empty() || pkg.root.ends_with('/'));
     }
 
-    // Each target its own sysroot, each sysroot its own folder.
-    let dirs: Vec<_> = TARGETS.iter().map(|x| dir(Path::new("/c"), x.clang, x.packages)).collect();
-    for (i, x) in dirs.iter().enumerate() {
-      assert!(!dirs[..i].contains(x), "{}", x.display());
+    // Each sysroot its own folder: targets share one only by its name, as Apple's do.
+    let dirs: Vec<_> = TARGETS
+      .iter()
+      .map(|x| (x.sysroot(), dir(Path::new("/c"), x.sysroot(), x.packages)))
+      .collect();
+    for (i, (name, x)) in dirs.iter().enumerate() {
+      assert!(dirs[..i].iter().all(|(n, y)| (n == name) == (y == x)), "{}", x.display());
     }
   }
 
@@ -652,13 +728,61 @@ mod tests {
   }
 
   #[test]
-  #[ignore = "downloads every package from every mirror, ~120 MB"]
+  fn ensure_lays_out_apple_s_sdk() {
+    let root = temp("sdk");
+    let at = |i: usize, x: &str| format!("{}{x}", DARWIN[i].root);
+    let files = [
+      (at(0, "stdio.h"), "stdio"),
+      (at(0, "sys/types.h"), "types"),
+      (at(1, "libSystem.tbd"), "libSystem"),
+      // Not taken: one that the sysroot leaves out, and another libc's.
+      (at(1, "SDKSettings.json"), "{}"),
+      (DARWIN[1].root.replace("/darwin/", "/glibc/") + "stdio.h", "glibc"),
+    ];
+    let files: Vec<_> = files.iter().map(|(x, data)| (x.as_str(), *data)).collect();
+    let tar = tarball(&files, &[]);
+    let mut xz = vec![];
+    lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
+    fs::write(root.join(DARWIN[0].path), &xz).unwrap();
+
+    let sha256: &str = hex(&hmac_sha256::Hash::hash(&xz)).leak();
+    let mirror: &str = format!("file://{}", root.display()).leak();
+    let pkgs: Vec<_> =
+      DARWIN.iter().map(|x| Package { mirrors: vec![mirror].leak(), sha256, ..*x }).collect();
+    let dir = ensure(&root.join("cache"), "macos", &pkgs).unwrap();
+    let read = |x: &str| fs::read_to_string(dir.join(x)).unwrap();
+    assert_eq!(read("usr/include/stdio.h"), "stdio");
+    assert_eq!(read("usr/include/sys/types.h"), "types");
+    assert_eq!(read("usr/lib/libSystem.tbd"), "libSystem");
+    assert_eq!(read("usr/lib/libc.tbd"), "libSystem");
+    assert_eq!(read("usr/lib/libm.tbd"), "libSystem");
+    assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
+    let names = |x: &str| {
+      let mut out: Vec<_> =
+        fs::read_dir(dir.join(x)).unwrap().map(|x| x.unwrap().file_name()).collect();
+      out.sort();
+      out
+    };
+    assert_eq!(names(""), ["usr"]);
+    assert_eq!(names("usr"), ["include", "lib"]);
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  #[ignore = "downloads every package from every mirror, ~160 MB"]
   fn every_package_is_on_every_mirror() {
     let root = temp("mirrors");
+    let mut done = vec![];
     for pkg in TARGETS.iter().flat_map(|x| x.packages) {
       for mirror in pkg.mirrors {
+        // Shared by targets, or one file's parts.
+        if done.contains(&(mirror, pkg.path)) {
+          continue;
+        }
+
         let one = Package { mirrors: vec![*mirror].leak(), ..*pkg };
         fetch(&one, &root.join("file")).unwrap();
+        done.push((mirror, pkg.path));
       }
     }
 

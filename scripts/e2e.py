@@ -10,14 +10,16 @@ uv run scripts/e2e.py run <dir>     each binary under <dir> this host can run, i
 uv run scripts/e2e.py all <dir>     the two on this host (`make e2e`)
 
 `build` checks each binary's file: `-linux-gnu` needs no glibc symbol over 2.28, `-linux-musl` is
-static, `-windows-gnu` imports only Windows' own DLLs. `run` takes any host's binaries, found
-anywhere under <dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other arch
-through QEMU), Windows ones on Windows. CI builds on each OS and runs on Linux and Windows
-(.github/workflows/main.yml).
+static, `-windows-gnu` imports only Windows' own DLLs, `-apple-darwin` loads only the system's
+dylibs and runs on rustc's oldest macOS. `run` takes any host's binaries, found anywhere under
+<dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other arch through QEMU),
+Windows ones on Windows, Apple ones on a Mac (x86_64 through Rosetta). CI builds on each OS and runs
+on each (.github/workflows/main.yml).
 """
 
 import argparse
 import hashlib
+import platform
 import re
 import shutil
 import subprocess
@@ -31,6 +33,8 @@ GLIBC = (2, 28)
 SYSTEM_DLL = re.compile(
     r"(?i)^(kernel32|msvcrt|ntdll|userenv|ws2_32|bcryptprimitives|api-ms-win-.+)\.dll$"
 )
+# The oldest macOS rustc builds for, which Apple's binaries must not raise.
+MACOS = {"aarch64": (11, 0), "x86_64": (10, 12)}
 SHA = hashlib.sha256(b"cargo-solo").hexdigest()[:16]
 EXPECTED = f"hello 10 {SHA} {SHA}"  # ring's and aws-lc's
 
@@ -79,6 +83,15 @@ def check(target: str, path: Path, tool: Path) -> None:
             sys.exit(f"e2e: {target} imports {other or 'nothing'}")
 
         log(f"{target}: imports {', '.join(sorted(set(dlls)))}")
+    elif target.endswith("-apple-darwin"):
+        text = run(tool, "--needed-libs", "--macho-version-min", path)
+        libs = re.search(r"NeededLibraries \[\n(.*?)\n\]", text, re.S)[1].split()
+        ver = tuple(int(x) for x in re.search(r"Version: ([0-9.]+)", text)[1].split("."))
+        other = [x for x in libs if not x.startswith("/usr/lib/")]
+        if not libs or other or ver > MACOS[target.split("-")[0]]:
+            sys.exit(f"e2e: {target} needs macOS {ver} and loads {libs}")
+
+        log(f"{target}: macOS {'.'.join(map(str, ver))}, loads {', '.join(libs)}")
 
 
 def build(out: Path) -> None:
@@ -125,6 +138,15 @@ def command(target: str, path: Path) -> list[str] | None:
 
     if "-windows-" in target and sys.platform == "win32":
         return [str(path)]
+
+    if "-apple-" in target and sys.platform == "darwin":
+        if not target.startswith("x86_64-") or platform.machine() == "x86_64":
+            return [str(path)]
+
+        # Rosetta, when this Mac has it
+        rosetta = subprocess.run(["arch", "-x86_64", "/usr/bin/true"], capture_output=True)
+        if rosetta.returncode == 0:
+            return ["arch", "-x86_64", str(path)]
 
     return None
 
