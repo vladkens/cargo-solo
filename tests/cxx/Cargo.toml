@@ -1,0 +1,12 @@
+[package]
+name = "hello-cxx"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built on its own, never as part of cargo-solo.
+[workspace]
+
+[build-dependencies]
+cc = "1.11.2"
+cmake = "0.1.58"

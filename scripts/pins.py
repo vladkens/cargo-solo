@@ -2,7 +2,8 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Re-pins the packages in src/packages.rs to what Debian, rustup and Zig have now (`make pins`).
+"""Re-pins the packages in src/packages.rs to what Debian, AlmaLinux, Alpine, rustup and Zig have
+now (`make pins`).
 
 uv run scripts/pins.py
 
@@ -11,16 +12,25 @@ table's name, its name and arch are in the file name; a new one can have the emp
 release's snapshot.debian.org mirror moves to the latest snapshot when one of its packages
 changes. A snapshot lags Debian by up to six hours: until it has the new packages, nothing is
 written. Zig's source tarball, Apple's SDK, moves to Zig's latest release.
+
+An AlmaLinux or Alpine package is `mirrors: <table>, path: "<arch>/<path>", sha256: "<sha256>"`:
+its name is in the file name. AlmaLinux's is its latest build in the repodata, with its SHA-256;
+Alpine's its version in APKINDEX, hashed by download, for the index has only SHA-1.
 """
 
+import gzip
+import hashlib
+import io
 import json
 import lzma
 import re
 import sys
+import tarfile
 import time
 import tomllib
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +46,9 @@ RUST_MINGW = re.compile(
     r'mirrors: RUSTUP,\s*path: "([^"]+)",\s*sha256: "([0-9a-f]*)",\s*root: "([^"]+)"'
 )
 ZIG = re.compile(r'path: "zig-([\d.]+)\.tar\.xz",\s*sha256: "([0-9a-f]*)"')
+RPM_APK = re.compile(r'mirrors: (\w+),\s*path: "([^"]+\.(?:rpm|apk))",\s*sha256: "([0-9a-f]*)"')
+REPO = "{http://linux.duke.edu/metadata/repo}"
+COMMON = "{http://linux.duke.edu/metadata/common}"
 
 
 def log(msg: str):
@@ -124,6 +137,92 @@ def debian(src: str) -> str:
     return src
 
 
+# MARK: AlmaLinux, Alpine
+
+
+def alma(mirror: str, arch: str) -> dict[str, tuple[int, str, str]]:
+    """Each package's latest build in AlmaLinux's repo at `mirror` for `arch`: its build time, its
+    path from the mirror and its SHA-256."""
+    base = f"{mirror}/{arch}/os"
+    log(f"reading {base}/repodata/repomd.xml")
+    repomd = ET.fromstring(get(f"{base}/repodata/repomd.xml").read())
+    href = repomd.find(f"{REPO}data[@type='primary']/{REPO}location").get("href")
+    log(f"reading {base}/{href}")
+    data = get(f"{base}/{href}").read()
+    xml = gzip.decompress(data) if href.endswith(".gz") else lzma.decompress(data)
+
+    rs = {}
+    for _, pkg in ET.iterparse(io.BytesIO(xml)):
+        if pkg.tag != f"{COMMON}package":
+            continue
+
+        name, check = pkg.findtext(f"{COMMON}name"), pkg.find(f"{COMMON}checksum")
+        build = int(pkg.find(f"{COMMON}time").get("build"))
+        path = f"{arch}/os/{pkg.find(f'{COMMON}location').get('href')}"
+        # x86_64's repo has i686 packages too
+        ours = pkg.findtext(f"{COMMON}arch") in (arch, "noarch") and check.get("type") == "sha256"
+        if ours and build >= rs.get(name, (0,))[0]:
+            rs[name] = (build, path, check.text)
+
+        pkg.clear()
+
+    return rs
+
+
+def alpine(mirror: str, arch: str) -> dict[str, str]:
+    """Each package's version in Alpine's repo at `mirror` for `arch`."""
+    url = f"{mirror}/{arch}/APKINDEX.tar.gz"
+    log(f"reading {url}")
+    with tarfile.open(fileobj=io.BytesIO(get(url).read())) as tar:
+        text = tar.extractfile("APKINDEX").read().decode()
+
+    rs = {}
+    for block in text.split("\n\n"):
+        pld = dict(x.split(":", 1) for x in block.splitlines() if x[1:2] == ":")
+        if "P" in pld:
+            rs[pld["P"]] = pld["V"]
+
+    return rs
+
+
+def others(src: str) -> str:
+    tables = {name: re.findall(r'"([^"]+)"', body) for name, body in TABLE.findall(src)}
+    indexes = {}
+
+    def repin(m: re.Match) -> str:
+        table, path, sha = m.groups()
+        arch, file = path.split("/")[0], Path(path).name
+        rpm = file.endswith(".rpm")
+        # name-version-release, and an RPM's arch
+        name = file.removesuffix(".apk").removesuffix(f".{arch}.rpm").rsplit("-", 2)[0]
+        mirror = tables[table][0]
+        key = (table, arch)
+        if key not in indexes:
+            indexes[key] = alma(mirror, arch) if rpm else alpine(mirror, arch)
+
+        found = indexes[key].get(name)
+        if not found:
+            sys.exit(f"pins: no {name} in {table.lower()} for {arch}, pin it by hand")
+
+        if rpm:
+            _, new_path, new_sha = found
+        else:
+            new_path = f"{arch}/{name}-{found}.apk"
+            new_sha = sha
+            if new_path != path or not sha:
+                log(f"hashing {mirror}/{new_path}")
+                new_sha = hashlib.sha256(get(f"{mirror}/{new_path}").read()).hexdigest()
+
+        if (new_path, new_sha) == (path, sha):
+            return m[0]
+
+        new = Path(new_path).name
+        log(f"{name} {arch}: {file} -> {new}" if new != file else f"{name} {arch}: hash")
+        return m[0].replace(path, new_path).replace(f'"{sha}"', f'"{new_sha}"')
+
+    return RPM_APK.sub(repin, src)
+
+
 # MARK: Rustup
 
 
@@ -177,7 +276,7 @@ def main():
     # only the tables' block: the tests have packages too
     start = src.index("// MARK: Packages")
     end = src.index("// MARK:", start + 1)
-    new = src[:start] + zig(rustup(debian(src[start:end]))) + src[end:]
+    new = src[:start] + others(zig(rustup(debian(src[start:end])))) + src[end:]
     if new == src:
         log("all current")
         return

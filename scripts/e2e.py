@@ -2,19 +2,19 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""The end-to-end test: tests/hello built by cargo-solo for every target it sets up, then run in
-each target's OS.
+"""The end-to-end test: the test crates, tests/hello (C) and tests/cxx (C++ and cmake), built by
+cargo-solo for every target it sets up, then run in each target's OS.
 
-uv run scripts/e2e.py build <dir>   every target's binary, <dir>/<target>/hello[.exe], checked
+uv run scripts/e2e.py build <dir>   every target's binaries, <dir>/<target>/<name>[.exe], checked
 uv run scripts/e2e.py run <dir>     each binary under <dir> this host can run, its output checked
 uv run scripts/e2e.py all <dir>     the two on this host (`make e2e`)
 
-`build` checks each binary's file: `-linux-gnu` needs no glibc symbol over 2.28, `-linux-musl` is
-static, `-windows-gnu` imports only Windows' own DLLs, `-apple-darwin` loads only the system's
-dylibs and runs on rustc's oldest macOS. `run` takes any host's binaries, found anywhere under
-<dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other arch through QEMU),
-Windows ones on Windows, Apple ones on a Mac (x86_64 through Rosetta). CI builds on each OS and runs
-on each (.github/workflows/main.yml).
+`build` checks each binary's file: `-linux-gnu` needs no glibc symbol over 2.28 and no shared
+libstdc++, `-linux-musl` is static, `-windows-gnu` imports only Windows' own DLLs, `-apple-darwin`
+loads only the system's dylibs and runs on rustc's oldest macOS. `run` takes any host's binaries,
+found anywhere under <dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other
+arch through QEMU), Windows ones on Windows, Apple ones on a Mac (x86_64 through Rosetta). CI builds
+on each OS and runs on each (.github/workflows/main.yml).
 """
 
 import argparse
@@ -36,7 +36,12 @@ SYSTEM_DLL = re.compile(
 # The oldest macOS rustc builds for, which Apple's binaries must not raise.
 MACOS = {"aarch64": (11, 0), "x86_64": (10, 12)}
 SHA = hashlib.sha256(b"cargo-solo").hexdigest()[:16]
-EXPECTED = f"hello 10 {SHA} {SHA}"  # ring's and aws-lc's
+# Each test crate's folder in tests/: its binary and the line it prints.
+CRATES = {
+    "hello": ("hello", f"hello 10 {SHA} {SHA}"),  # ring's and aws-lc's
+    "cxx": ("hello-cxx", "hello-cxx caught 10 0.50 48"),
+}
+EXPECTED = dict(CRATES.values())
 
 
 def log(msg: str) -> None:
@@ -70,6 +75,9 @@ def check(target: str, path: Path, tool: Path) -> None:
         if top > GLIBC:
             sys.exit(f"e2e: {target} needs glibc {'.'.join(map(str, top))}")
 
+        if "libstdc++" in run(tool, "--needed-libs", path):
+            sys.exit(f"e2e: {target} needs the shared libstdc++")
+
         log(f"{target}: glibc {'.'.join(map(str, top))}")
     elif target.endswith("-linux-musl"):
         if "PT_INTERP" in run(tool, "--program-headers", path):
@@ -95,7 +103,7 @@ def check(target: str, path: Path, tool: Path) -> None:
 
 
 def build(out: Path) -> None:
-    """tests/hello for every target in one `cargo solo build`, copied to <out>/<target>/."""
+    """Each test crate for every target in one `cargo solo build`, copied to <out>/<target>/."""
     run("cargo", "build", "--release", cwd=ROOT)
     solo = ROOT / "target" / "release" / f"cargo-solo{EXE}"
     text = run(solo, "--help")
@@ -103,25 +111,17 @@ def build(out: Path) -> None:
     if not targets:
         sys.exit("e2e: no targets in `cargo solo --help`")
 
-    dest = ROOT / "target" / "hello"
     args = [x for t in targets for x in ("--target", t)]
-    run(
-        solo,
-        "solo",
-        "build",
-        "--release",
-        "--target-dir",
-        dest,
-        *args,
-        cwd=ROOT / "tests" / "hello",
-    )
-
     tool = readobj()
-    for target in targets:
-        name = "hello.exe" if "-windows-" in target else "hello"
-        (out / target).mkdir(parents=True, exist_ok=True)
-        path = shutil.copy2(dest / target / "release" / name, out / target / name)
-        check(target, Path(path), tool)
+    for crate, (name, _) in CRATES.items():
+        dest = ROOT / "target" / crate
+        cmd = [solo, "solo", "build", "--release", "--target-dir", dest, *args]
+        run(*cmd, cwd=ROOT / "tests" / crate)
+        for target in targets:
+            file = f"{name}.exe" if "-windows-" in target else name
+            (out / target).mkdir(parents=True, exist_ok=True)
+            path = shutil.copy2(dest / target / "release" / file, out / target / file)
+            check(target, Path(path), tool)
 
 
 # MARK: Run
@@ -152,9 +152,9 @@ def command(target: str, path: Path) -> list[str] | None:
 
 
 def check_runs(out: Path) -> None:
-    """Each binary under <out> this host can run prints EXPECTED; fails when none could run."""
+    """Each binary under <out> this host can run prints its line; fails when none could run."""
     ran = 0
-    for path in sorted(x for x in out.rglob("hello*") if x.name in ("hello", "hello.exe")):
+    for path in sorted(x for x in out.rglob("*") if x.name.removesuffix(".exe") in EXPECTED):
         target = path.parent.name
         # An artifact downloaded in CI loses the executable bit.
         if sys.platform != "win32":
@@ -165,9 +165,9 @@ def check_runs(out: Path) -> None:
             log(f"{path.relative_to(out)}: not on this host")
             continue
 
-        got = run(*cmd).strip()
-        if got != EXPECTED:
-            sys.exit(f"e2e: {path.relative_to(out)} printed {got!r}, not {EXPECTED!r}")
+        got, want = run(*cmd).strip(), EXPECTED[path.name.removesuffix(".exe")]
+        if got != want:
+            sys.exit(f"e2e: {path.relative_to(out)} printed {got!r}, not {want!r}")
 
         log(f"{path.relative_to(out)}: {got}")
         ran += 1

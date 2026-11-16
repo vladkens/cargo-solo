@@ -24,8 +24,8 @@ fn main() -> ExitCode {
 fn start() -> io::Result<()> {
   let mut argv = env::args_os();
   let arg0 = argv.next().unwrap_or_default();
-  if let Some(target) = Target::wrapped(&arg0) {
-    return Err(exec(toolchain::wrap(target, argv.collect())?));
+  if let Some((target, cxx)) = Target::wrapped(&arg0) {
+    return Err(exec(toolchain::wrap(target, cxx, argv.collect())?));
   }
 
   let (args, targets) = match args::parse(env::args_os()) {

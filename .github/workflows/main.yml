@@ -42,7 +42,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo test -- --ignored
 
-  # tests/hello built on each host for every target, its files checked
+  # the test crates built on each host for every target, their files checked; cmake is the
+  # runners', and on Windows ninja
   build:
     strategy:
       fail-fast: false

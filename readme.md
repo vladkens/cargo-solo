@@ -10,7 +10,7 @@
 
 </div>
 
-`cargo solo build --target <target>` builds your Rust project, C dependencies included, for Linux and Windows from a Mac, Linux or Windows, and for macOS from Linux or Windows. It uses the clang your system has and the lld rustup ships, and fetches each target's libc from Debian's own packages (macOS's from Zig's source) on first use, pinned by SHA-256 and cached.
+`cargo solo build --target <target>` builds your Rust project, C and C++ dependencies included, for Linux and Windows from a Mac, Linux or Windows, and for macOS from Linux or Windows. It uses the clang your system has and the lld rustup ships, and fetches each target's libc from Debian's own packages (macOS's from Zig's source) on first use, pinned by SHA-256 and cached.
 
 ## 🤔 Why
 
@@ -21,9 +21,10 @@
 - 🎯 **Linux glibc and musl, x86_64 and aarch64, and Windows**, from any of macOS, Linux and Windows
 - 🍏 **macOS, arm64 and x86_64, from Linux and Windows**: Rust and C, without Apple's frameworks
 - 🧱 **C dependencies through `cc`**, such as `ring` and `aws-lc-rs`, rustls' crypto, with no setup
+- 🧩 **C++ through `cc` and crates built through cmake**, for Linux and Windows, with GCC 14's libstdc++ linked statically: C++20 and most of C++23
 - 🐧 **glibc 2.28**: the binary runs on Debian 10, RHEL 8 and anything newer
 - 🪶 **3 to 23 MB per target**, fetched once: no Zig, no Docker image, no toolchain of ours
-- 🔐 **Nothing of ours hosted**: every file is Debian's, rustup's or Zig's, pinned by SHA-256
+- 🔐 **Nothing of ours hosted**: every file is Debian's, AlmaLinux's, Alpine's, rustup's or Zig's, pinned by SHA-256
 - 🧰 **Your flags stay yours**: `RUSTFLAGS` and `CFLAGS` work as without it
 
 ## ⚡ Quick start
@@ -33,7 +34,7 @@ cargo install --locked cargo-solo
 cargo solo build --release --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
 ```
 
-It needs clang (on a Mac, `xcode-select --install`; on Linux, the distro's `clang`; on Windows, `winget install LLVM.LLVM`), 18 or newer for macOS, and rustup. cargo-solo adds the target and `llvm-tools` through rustup when they're missing.
+It needs clang (on a Mac, `xcode-select --install`; on Linux, the distro's `clang`; on Windows, `winget install LLVM.LLVM`), 18 or newer for macOS, and rustup. cargo-solo adds the target and `llvm-tools` through rustup when they're missing. A crate built through cmake needs cmake, and on Windows ninja too (`winget install Kitware.CMake Ninja-build.Ninja`).
 
 Any cargo command works, and several `--target`s in one run, as cargo takes them:
 
@@ -66,11 +67,16 @@ For each `--target` it sets up, cargo-solo runs cargo with:
 
 - `CC_<target>` and `CARGO_TARGET_<TARGET>_LINKER`: `<target>-clang`, a link to cargo-solo in its cache, which runs your clang with the target's `--target` and `--sysroot` (for macOS, `-isysroot`), and to link, rustup's rust-lld (`-fuse-ld=lld`, as `ld64.lld` for macOS);
 - `AR_<target>`: rustup's llvm-ar;
+- for Linux and Windows, `CXX_<target>`: `<target>-clang++`, the same link, which runs clang as g++ with libstdc++'s headers, and to link, libstdc++; unless you set `CXX_<target>` or `TARGET_CXX`;
+- for Linux and Windows, `CMAKE_TOOLCHAIN_FILE_<target>`: a toolchain file in the cache for cmake-rs, with the target's system, its sysroot, the two compilers, llvm-ar (also as ranlib) and llvm-nm; unless you set it or `CMAKE_TOOLCHAIN_FILE`;
+- on a Windows host with ninja on `PATH`, `CMAKE_GENERATOR_<target>=Ninja`, unless you chose a generator: cmake-rs would take Visual Studio, or MinGW's make for Windows;
 - `PATH` with a folder in front that has rustup's llvm-ar and llvm-nm as the target's `ar`, `ranlib` and `nm`, by the names a configure script looks for with `--host`, such as `x86_64-unknown-linux-musl-ar` and `x86_64-linux-musl-ar`: the host's own, such as macOS's ar, can't read the target's objects; for Windows also llvm-ar as `x86_64-w64-mingw32-dlltool` (`dlltool.exe` on Windows), which rustc runs for `raw-dylib` links, as windows-sys's are;
 - for Windows, `AWS_LC_SYS_PREBUILT_NASM_<target>=1`, unless you set it in the environment or cargo's config, so that aws-lc-sys, rustls' crypto, takes the NASM objects it ships and needs no nasm;
 - for macOS, `SDKROOT`, the SDK in the cache, and `MACOSX_DEPLOYMENT_TARGET`, rustc's oldest macOS (10.12, which arm64 raises to 11), unless you set them.
 
 So it sets no `RUSTFLAGS` or `CFLAGS`, which would replace yours. The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files (for macOS, from Zig's source tarball, with libSystem's aliases such as `libc.tbd` and a stub of libiconv added) into the cache: `~/Library/Caches/cargo-solo` on macOS, `~/.cache/cargo-solo` on Linux (`$XDG_CACHE_HOME`), `%LOCALAPPDATA%\cargo-solo` on Windows, or `CARGO_SOLO_CACHE`. Each download is tried from the archive and then from snapshot.debian.org (Zig's from ziglang.org, then a community mirror), and taken only with its pinned SHA-256. cargo-solo writes nothing outside the cache and cargo's target folder.
+
+libstdc++ is GCC 14's, static, so the binary needs no libstdc++ where it runs: for glibc, AlmaLinux 8's `gcc-toolset-14`, built for glibc 2.28; for musl, Alpine 3.21's; for Windows, Debian 13's mingw-w64 g++. Each is tried from the distro's server and then from kernel.org's mirror (Debian's as above). It is fetched into its own folder on the first C++ compile, so a build with no C++ fetches nothing more: 4 MB to download and 22 MB on disk for x86_64 Linux, 6.4 MB and 25 MB for aarch64 Linux, 15 MB and 21 MB for Windows. Then rustc's link gets it too, when a crate names `stdc++` for rustc, as cc does for C++. For aarch64, GCC 14's `libgcc.a` comes with it, for the outline atomics libstdc++ calls. cmake can't compile Windows resources (`.rc`): there's no windres.
 
 ## 🚀 GitHub Actions
 
@@ -104,7 +110,7 @@ The usual ways to cross-compile, and what each costs:
 | musl, Windows gnu | ✅ | ✅ | ✅ |
 | On Apple silicon | native | native | x86_64, emulated |
 | Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
-| C++, cmake | ❌ not yet | ✅ | ✅ |
+| C++, cmake | ✅ but for macOS | ✅ | ✅ |
 
 The first build of a crate with `ring` on Linux arm64: what each tool fetches, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
 
@@ -115,11 +121,10 @@ The first build of a crate with `ring` on Linux arm64: what each tool fetches, a
 | Web server | 14 MB, +6 s | +75 s building libc | 1.2 GB of images |
 | CLI | 24 MB, +10 s | +140 s building libc | 2.3 GB of images |
 
-Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
+Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ for macOS (cargo-zigbuild), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
 ## 🗺️ Roadmap
 
-- Crates built through cmake and C++ (`libstdc++`).
 - Other glibc versions, each a Debian release.
 - More Debian `-dev` packages in a sysroot, such as ALSA's.
 - `aarch64-pc-windows-gnullvm`, i686, armv7 and riscv64.

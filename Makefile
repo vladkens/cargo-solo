@@ -3,6 +3,7 @@
 prepare:
 	cargo +nightly fmt
 	cargo +nightly fmt --manifest-path tests/hello/Cargo.toml
+	cargo +nightly fmt --manifest-path tests/cxx/Cargo.toml
 	uvx ruff format --line-length 100 scripts
 	uv run scripts/blank-lines.py --fix
 	cargo clippy --all-targets --fix --allow-dirty --allow-staged
@@ -10,6 +11,7 @@ prepare:
 check:
 	cargo +nightly fmt --check
 	cargo +nightly fmt --check --manifest-path tests/hello/Cargo.toml
+	cargo +nightly fmt --check --manifest-path tests/cxx/Cargo.toml
 	uvx ruff format --check --line-length 100 scripts
 	uv run scripts/blank-lines.py
 	cargo clippy --all-targets -- -D warnings
