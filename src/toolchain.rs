@@ -114,10 +114,11 @@ impl Target {
   /// `ar` its archiver.
   pub fn env(&self, cc: &Path, ar: &Path) -> [(String, OsString); 3] {
     let upper = self.rust.to_uppercase().replace('-', "_");
+    let (cc, ar) = (slash(cc), slash(ar));
     [
-      (format!("CC_{}", self.rust), cc.into()),
-      (format!("AR_{}", self.rust), ar.into()),
-      (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
+      (format!("CC_{}", self.rust), cc.clone()),
+      (format!("AR_{}", self.rust), ar),
+      (format!("CARGO_TARGET_{upper}_LINKER"), cc),
     ]
   }
 
@@ -173,6 +174,16 @@ fn cat(flag: &str, path: &Path) -> OsString {
   let mut out = OsString::from(flag);
   out.push(path);
   out
+}
+
+/// `path` with Windows' `\` as `/`, which Windows takes too: a Makefile's command goes to sh, which
+/// drops each `\`, as openssl-src's `$(CC)` under MSYS2. A verbatim path, `\\?\`, keeps its `\`:
+/// Windows takes no `/` in it.
+fn slash(path: &Path) -> OsString {
+  match path.to_str() {
+    Some(x) if cfg!(windows) && !x.starts_with(r"\\?\") => x.replace('\\', "/").into(),
+    _ => path.into(),
+  }
 }
 
 // MARK: Host
@@ -542,6 +553,12 @@ mod tests {
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+
+    // `\` is a separator on Windows only, elsewhere a name's character.
+    let [(_, cc), ..] = target.env(Path::new(r"C:\c\cc.exe"), Path::new("/r/llvm-ar"));
+    assert_eq!(cc, if cfg!(windows) { "C:/c/cc.exe" } else { r"C:\c\cc.exe" });
+    let [(_, cc), ..] = target.env(Path::new(r"\\?\C:\c\cc.exe"), Path::new("/r/llvm-ar"));
+    assert_eq!(cc, r"\\?\C:\c\cc.exe");
   }
 
   #[test]
