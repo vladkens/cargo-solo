@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
 //! The sysroots: each target's libc, headers and libraries from Debian's packages (mingw's libgcc
-//! from rustup's, Apple's SDK from Zig's source), pinned by SHA-256, fetched by the system's `curl`
-//! on first use and unpacked into the cache.
+//! from rustup's, Apple's SDK from Zig's source), and its libstdc++ from AlmaLinux's, Alpine's or
+//! Debian's, pinned by SHA-256, fetched by the system's `curl` on first use and unpacked into the
+//! cache.
 
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
@@ -43,7 +44,7 @@ impl Libc {
 #[derive(Debug)]
 pub struct Package {
   pub mirrors: &'static [&'static str],
-  /// The path under each mirror, of a `.deb` or a `.tar.xz`.
+  /// The path under each mirror, of a `.deb`, an `.rpm`, an `.apk` or a `.tar.xz`.
   pub path: &'static str,
   pub sha256: &'static str,
   /// The folder in the archive the files are taken from; of those, the ones whose path there
@@ -79,6 +80,20 @@ const RUSTUP: &[&str] = &["https://static.rust-lang.org"];
 
 /// Zig's releases on ziglang.org, and a community mirror Zig lists, which serves the same files.
 const ZIG: &[&str] = &["https://ziglang.org/download/0.17.1", "https://pkg.hexops.org/zig"];
+
+/// AlmaLinux 8.10's AppStream, RHEL 8's rebuilt, and kernel.org's copy: 8's last release, whose
+/// packages stay until 8's end in 2029.
+const ALMA8: &[&str] = &[
+  "https://repo.almalinux.org/almalinux/8.10/AppStream",
+  "https://mirrors.edge.kernel.org/almalinux/8.10/AppStream",
+];
+
+/// Alpine 3.21's main, and kernel.org's copy: out of support since 2026-11-01, so its packages no
+/// longer change.
+const ALPINE: &[&str] = &[
+  "https://dl-cdn.alpinelinux.org/alpine/v3.21/main",
+  "https://mirrors.edge.kernel.org/alpine/v3.21/main",
+];
 
 impl Package {
   const fn deb(
@@ -263,6 +278,143 @@ exports:
 ...
 ";
 
+/// A target's libstdc++, GCC 14's, linked statically: its packages, unpacked into a folder of their
+/// own on the first C++ compile, and where they put its headers and libraries there.
+#[derive(Debug)]
+pub struct Cxx {
+  pub packages: &'static [Package],
+  /// The headers, `include/c++/<version>`.
+  pub include: &'static str,
+  /// GCC's name for the target: the folder of `include` with the target's own headers.
+  pub triple: &'static str,
+  /// The folder of `libstdc++.a`.
+  pub lib: &'static str,
+  /// Whether the folder has GCC 14's `libgcc.a`, for what clang++ links itself.
+  pub libgcc: bool,
+}
+
+/// GCC 14's libgcc for aarch64: GCC 14's libstdc++ calls aarch64's outline atomics
+/// (`__aarch64_ldadd4_acq_rel`), which GCC 8's libgcc lacks. rustc links its own,
+/// compiler_builtins'.
+const LIBGCC14_ARM64: Package = Package {
+  root: "usr/lib/gcc/aarch64-linux-gnu/14/",
+  keep: &["libgcc.a"],
+  ..Package::deb(
+    TRIXIE,
+    "pool/main/g/gcc-14/libgcc-14-dev_14.2.0-19_arm64.deb",
+    "64b8ebc7182a69aa9525df6eab5e7eb849b947e350d821549f8a8a3e9b19e5ba",
+  )
+};
+
+/// libstdc++ for glibc 2.28 on x86_64: gcc-toolset-14's, AlmaLinux 8's, built for glibc 2.28. Not
+/// its `libstdc++.so`, a linker script into the host's `/usr/lib64`, nor `libstdc++_nonshared.a`,
+/// which goes with it.
+pub const CXX_GLIBC_X64: Cxx = Cxx {
+  packages: &[Package {
+    mirrors: ALMA8,
+    path: "x86_64/os/Packages/gcc-toolset-14-libstdc++-devel-14.2.1-11.el8_10.x86_64.rpm",
+    sha256: "a5306cbaa5f3223de9320374aeac00dbddee817e11bab3c8217e33a131eca0a1",
+    root: "opt/rh/gcc-toolset-14/root/usr/",
+    keep: &[
+      "include/c++/14/",
+      "lib/gcc/x86_64-redhat-linux/14/libstdc++.a",
+      "lib/gcc/x86_64-redhat-linux/14/libstdc++fs.a",
+      "lib/gcc/x86_64-redhat-linux/14/libsupc++.a",
+    ],
+    into: "",
+  }],
+  include: "include/c++/14",
+  triple: "x86_64-redhat-linux",
+  lib: "lib/gcc/x86_64-redhat-linux/14",
+  libgcc: false,
+};
+
+/// [CXX_GLIBC_X64] for aarch64.
+pub const CXX_GLIBC_ARM64: Cxx = Cxx {
+  packages: &[
+    Package {
+      mirrors: ALMA8,
+      path: "aarch64/os/Packages/gcc-toolset-14-libstdc++-devel-14.2.1-11.el8_10.aarch64.rpm",
+      sha256: "c70b6f1a0c67d4798e488772ce55dbceef0268a5ea551da83829965bd5f5235f",
+      root: "opt/rh/gcc-toolset-14/root/usr/",
+      keep: &[
+        "include/c++/14/",
+        "lib/gcc/aarch64-redhat-linux/14/libstdc++.a",
+        "lib/gcc/aarch64-redhat-linux/14/libstdc++fs.a",
+        "lib/gcc/aarch64-redhat-linux/14/libsupc++.a",
+      ],
+      into: "",
+    },
+    LIBGCC14_ARM64,
+  ],
+  include: "include/c++/14",
+  triple: "aarch64-redhat-linux",
+  lib: "lib/gcc/aarch64-redhat-linux/14",
+  libgcc: true,
+};
+
+/// What a musl target keeps of Alpine's libstdc++-dev.
+const ALPINE_CXX: &[&str] =
+  &["include/c++/", "lib/libstdc++.a", "lib/libstdc++fs.a", "lib/libsupc++.a"];
+
+/// libstdc++ for musl on x86_64: Alpine's, built for musl.
+pub const CXX_MUSL_X64: Cxx = Cxx {
+  packages: &[Package {
+    mirrors: ALPINE,
+    path: "x86_64/libstdc++-dev-14.2.0-r4.apk",
+    sha256: "8a2c14b49e5b3d75ec32d6f62966df8b1abad200ab9479172805ddc0f221e1df",
+    root: "usr/",
+    keep: ALPINE_CXX,
+    into: "",
+  }],
+  include: "include/c++/14.2.0",
+  triple: "x86_64-alpine-linux-musl",
+  lib: "lib",
+  libgcc: false,
+};
+
+/// [CXX_MUSL_X64] for aarch64.
+pub const CXX_MUSL_ARM64: Cxx = Cxx {
+  packages: &[
+    Package {
+      mirrors: ALPINE,
+      path: "aarch64/libstdc++-dev-14.2.0-r4.apk",
+      sha256: "b347c2689cb1815510419dd68918c20649f48b0a7e665fea4cd8155dfa7adc9c",
+      root: "usr/",
+      keep: ALPINE_CXX,
+      into: "",
+    },
+    LIBGCC14_ARM64,
+  ],
+  include: "include/c++/14.2.0",
+  triple: "aarch64-alpine-linux-musl",
+  lib: "lib",
+  libgcc: true,
+};
+
+/// libstdc++ for x86_64 Windows: Debian's mingw-w64 g++, posix threads, only its headers and static
+/// libraries: no `libstdc++.dll.a`, which would link the DLL.
+pub const CXX_MINGW_X64: Cxx = Cxx {
+  packages: &[Package {
+    root: "usr/lib/gcc/x86_64-w64-mingw32/",
+    keep: &[
+      "14-posix/include/c++/",
+      "14-posix/libstdc++.a",
+      "14-posix/libstdc++fs.a",
+      "14-posix/libsupc++.a",
+    ],
+    ..Package::deb(
+      TRIXIE,
+      "pool/main/g/gcc-mingw-w64/g++-mingw-w64-x86-64-posix_14.2.0-19+27+b1_amd64.deb",
+      "cfa1773c2d0184819050138e587a81606d04a5f92e278b521b72b776d2c256c1",
+    )
+  }],
+  include: "14-posix/include/c++",
+  triple: "x86_64-w64-mingw32",
+  lib: "14-posix",
+  libgcc: false,
+};
+
 /// macOS's `sys/syscall.h`, which Zig's source doesn't have, without its numbers: jemalloc includes
 /// it on every Unix, and syscall(2), deprecated on macOS, is what they're for.
 const SYSCALL_H: &str = "/* cargo-solo's: macOS's header without the syscall numbers. */
@@ -319,7 +471,7 @@ pub fn ensure(cache: &Path, name: &str, packages: &[Package]) -> io::Result<Path
   // The time too: runs in containers that share the cache have the same ids.
   let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
   let part = tmp.join(format!("{name}-{}-{now}", std::process::id()));
-  eprintln!("cargo-solo: fetching {name}'s sysroot into {}", dir.display());
+  eprintln!("cargo-solo: fetching {name} into {}", dir.display());
   let done = fill(&part, packages).and_then(|()| fs::rename(&part, &dir));
   let _ = fs::remove_dir_all(&part);
   match done {
@@ -355,16 +507,24 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
       Some((path, tar)) if path == pkg.path => tar,
       _ => {
         let data = fetch(pkg, &root.join(".download")).map_err(at)?;
-        let tar = match file.ends_with(".deb") {
-          true => member(&data, "data.tar.xz").and_then(xz),
-          false => xz(&data),
+        let tar = match file.rsplit('.').next() {
+          Some("deb") => member(&data, "data.tar.xz").and_then(xz),
+          Some("rpm") => payload(&data).and_then(xz),
+          Some("apk") => gunzip(&data),
+          _ => xz(&data),
         };
 
         tar.map_err(at)?
       }
     };
 
-    links.extend(unpack(&tar, pkg, root).map_err(at)?);
+    // An rpm's is a cpio archive, not a tar.
+    let got = match file.ends_with(".rpm") {
+      true => cpio(&tar, pkg, root),
+      false => unpack(&tar, pkg, root),
+    };
+
+    links.extend(got.map_err(at)?);
     last = Some((pkg.path, tar));
   }
 
@@ -478,9 +638,164 @@ fn member<'a>(ar: &'a [u8], name: &str) -> io::Result<&'a [u8]> {
   Err(bad(format!("no {name} in the .deb")))
 }
 
+/// The data of the xz stream `data`. lzma-rs reads no SHA-256 check, which AlmaLinux's have, so its
+/// blocks go to LZMA2 one by one and their checks are skipped: the pinned SHA-256 makes them moot.
+/// A stream is a 12-byte header, the check's kind at 7, then blocks until the index, a zero. A
+/// block is its header, `(first byte + 1) * 4` bytes, the data, padded to 4 bytes, and the check.
 fn xz(data: &[u8]) -> io::Result<Vec<u8>> {
+  let short = || bad("the xz stream is cut short");
+  let [0xfd, b'7', b'z', b'X', b'Z', 0, 0, check, ..] = *data else {
+    return Err(bad("not an xz stream"));
+  };
+
+  let check = match check & 15 {
+    0 => 0,
+    1 => 4,
+    4 => 8,
+    10 => 32,
+    x => return Err(bad(format!("xz: an unknown check {x}"))),
+  };
+
   let mut out = vec![];
-  lzma_rs::xz_decompress(&mut &data[..], &mut out).map_err(|e| bad(format!("xz: {e}")))?;
+  let mut at = 12;
+  loop {
+    let size = match data.get(at) {
+      Some(0) => return Ok(out),
+      Some(x) => (*x as usize + 1) * 4,
+      None => return Err(short()),
+    };
+
+    // One filter, LZMA2's, after the sizes the flags name, each a varint.
+    let head = data.get(at..at + size).ok_or_else(short)?;
+    let mut i = 2;
+    for flag in [0x40, 0x80] {
+      if head[1] & flag != 0 {
+        i += head[i..].iter().position(|x| x & 0x80 == 0).ok_or_else(short)? + 1;
+      }
+    }
+
+    if head[1] & 3 != 0 || head.get(i) != Some(&0x21) {
+      return Err(bad("xz: a filter other than LZMA2"));
+    }
+
+    let mut rest = &data[at + size..];
+    lzma_rs::lzma2_decompress(&mut rest, &mut out).map_err(|e| bad(format!("xz: {e}")))?;
+    at = (data.len() - rest.len()).next_multiple_of(4) + check;
+  }
+}
+
+/// The payload of the RPM `rpm`, a compressed cpio archive: after the 96-byte lead come two
+/// headers, the signature's, padded to 8 bytes, and the package's. A header is its magic, its
+/// counts of index entries and of data bytes, big-endian at 8 and 12, then 16 bytes per entry and
+/// the data.
+fn payload(rpm: &[u8]) -> io::Result<&[u8]> {
+  if !rpm.starts_with(b"\xed\xab\xee\xdb") {
+    return Err(bad("not an RPM: no lead"));
+  }
+
+  let end = |at: usize| -> io::Result<usize> {
+    let head = rpm.get(at..at + 16).filter(|x| x.starts_with(b"\x8e\xad\xe8\x01"));
+    let head = head.ok_or_else(|| bad("a malformed RPM header"))?;
+    let count = |i: usize| u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+    Ok(at + 16 + 16 * count(8) as usize + count(12) as usize)
+  };
+
+  let at = end(end(96)?.next_multiple_of(8))?;
+  rpm.get(at..).ok_or_else(|| bad("the RPM is cut short"))
+}
+
+/// Writes the files of the cpio archive `cpio` that `pkg` keeps into `root`, and gives its symlinks
+/// as [unpack] does. The format is "newc", an RPM's: per file a 110-byte header of hex fields, the
+/// mode at 14, the link count at 38, the size at 54 and the name's size at 94, then the name and
+/// the data, each padded to 4 bytes; a symlink's data is what it points at. The last is
+/// `TRAILER!!!`.
+fn cpio(cpio: &[u8], pkg: &Package, root: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+  let short = || bad("the cpio archive is cut short");
+  let mut links = vec![];
+  let mut at = 0;
+  loop {
+    let head = cpio.get(at..at + 110).ok_or_else(short)?;
+    if !head.starts_with(b"070701") {
+      return Err(bad("not a cpio archive in the newc format"));
+    }
+
+    let field = |from: usize| {
+      let text = std::str::from_utf8(&head[from..from + 8]).unwrap_or_default();
+      usize::from_str_radix(text, 16).map_err(|_| bad("a malformed cpio header"))
+    };
+
+    let (mode, count, size, end) = (field(14)?, field(38)?, field(54)?, at + 110 + field(94)?);
+    // The name ends with a zero.
+    let name = cpio.get(at + 110..end.saturating_sub(1)).ok_or_else(short)?;
+    let name = std::str::from_utf8(name).map_err(|_| bad("a path not in UTF-8"))?;
+    let from = end.next_multiple_of(4);
+    let data = cpio.get(from..from + size).ok_or_else(short)?;
+    at = (from + size).next_multiple_of(4);
+    if name == "TRAILER!!!" {
+      return Ok(links);
+    }
+
+    let Some(rel) = place(Path::new(name), pkg)? else { continue };
+    match mode & 0o170000 {
+      // A hard link's data is in only one of its entries: none of ours has one.
+      0o100000 if count > 1 => return Err(bad(format!("{name}: a hard link"))),
+      0o100000 => write(&root.join(rel), data)?,
+      0o120000 => {
+        let to = std::str::from_utf8(data).map_err(|_| bad("a path not in UTF-8"))?;
+        links.extend(resolve(&rel, Path::new(to)).map(|to| (rel, to)));
+      }
+      _ => {}
+    }
+  }
+}
+
+/// The tarball of the Alpine package `apk`: its gzip streams, the signature's, the control files'
+/// and the data's, are one tarball together. A stream is a 10-byte header, its flags at 3, the
+/// fields they name, the deflate data and an 8-byte trailer; the pinned SHA-256 makes its CRC moot.
+fn gunzip(apk: &[u8]) -> io::Result<Vec<u8>> {
+  use miniz_oxide::inflate::stream::{InflateState, inflate};
+  use miniz_oxide::{DataFormat, MZFlush, MZStatus};
+
+  let short = || bad("the gzip stream is cut short");
+  let mut out = vec![];
+  let mut rest = apk;
+  while !rest.is_empty() {
+    let [0x1f, 0x8b, 8, flags, ..] = *rest else { return Err(bad("not a gzip stream")) };
+    rest = rest.get(10..).ok_or_else(short)?;
+    // FEXTRA: its size, then its data.
+    if flags & 4 != 0 {
+      let size = rest.get(..2).map(|x| u16::from_le_bytes([x[0], x[1]]) as usize);
+      rest = rest.get(2 + size.ok_or_else(short)?..).ok_or_else(short)?;
+    }
+
+    // FNAME and FCOMMENT, each ended by a zero; then FHCRC.
+    for flag in [8, 16] {
+      if flags & flag != 0 {
+        rest = &rest[rest.iter().position(|x| *x == 0).ok_or_else(short)? + 1..];
+      }
+    }
+
+    if flags & 2 != 0 {
+      rest = rest.get(2..).ok_or_else(short)?;
+    }
+
+    let mut state = InflateState::new_boxed(DataFormat::Raw);
+    loop {
+      let at = out.len();
+      out.resize(at + (1 << 16), 0);
+      let got = inflate(&mut state, rest, &mut out[at..], MZFlush::None);
+      out.truncate(at + got.bytes_written);
+      rest = &rest[got.bytes_consumed..];
+      match got.status {
+        Ok(MZStatus::StreamEnd) => break,
+        Ok(_) => {}
+        Err(e) => return Err(bad(format!("gzip: {e:?}"))),
+      }
+    }
+
+    rest = rest.get(8..).ok_or_else(short)?;
+  }
+
   Ok(out)
 }
 
@@ -490,18 +805,11 @@ fn xz(data: &[u8]) -> io::Result<Vec<u8>> {
 fn unpack(tar: &[u8], pkg: &Package, root: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
   let mut links = vec![];
   for entry in tar::Archive::new(tar).entries()? {
-    let mut entry = entry?;
+    let entry = entry?;
     let Some(rel) = place(&entry.path()?, pkg)? else { continue };
     let to = entry.link_name()?.map(|x| x.into_owned());
     match (entry.header().entry_type(), to) {
-      (EntryType::Regular | EntryType::Continuous, _) => {
-        let path = root.join(&rel);
-        if let Some(dir) = path.parent() {
-          fs::create_dir_all(dir)?;
-        }
-
-        io::copy(&mut entry, &mut File::create(&path)?)?;
-      }
+      (EntryType::Regular | EntryType::Continuous, _) => write(&root.join(&rel), entry)?,
       (EntryType::Symlink, Some(to)) => links.extend(resolve(&rel, &to).map(|to| (rel, to))),
       // A hard link names a path in the archive.
       (EntryType::Link, Some(to)) => links.extend(place(&to, pkg)?.map(|to| (rel, to))),
@@ -510,6 +818,15 @@ fn unpack(tar: &[u8], pkg: &Package, root: &Path) -> io::Result<Vec<(PathBuf, Pa
   }
 
   Ok(links)
+}
+
+/// Writes the file at `path` with `data`, making its folder.
+fn write(path: &Path, mut data: impl io::Read) -> io::Result<()> {
+  if let Some(dir) = path.parent() {
+    fs::create_dir_all(dir)?;
+  }
+
+  io::copy(&mut data, &mut File::create(path)?).map(drop)
 }
 
 /// Where `name`, a path in the archive of `pkg`, goes in the sysroot; `None` when `pkg` doesn't
@@ -641,21 +958,85 @@ mod tests {
     tar.into_inner().unwrap()
   }
 
+  /// An RPM of `payload`: the lead, a signature header of one entry and 5 bytes, padded, and the
+  /// header of two entries and 3 bytes.
+  fn rpm(payload: &[u8]) -> Vec<u8> {
+    let head = |count: u32, size: u32| {
+      let mut out = b"\x8e\xad\xe8\x01\0\0\0\0".to_vec();
+      out.extend(count.to_be_bytes());
+      out.extend(size.to_be_bytes());
+      out.resize(out.len() + 16 * count as usize + size as usize, 7);
+      out
+    };
+
+    let mut out = b"\xed\xab\xee\xdb".to_vec();
+    out.resize(96, 0);
+    out.extend(head(1, 5));
+    out.resize(out.len().next_multiple_of(8), 0);
+    out.extend(head(2, 3));
+    out.extend(payload);
+    out
+  }
+
+  /// A cpio archive in the newc format of `entries`: path, mode, link count and data.
+  fn newc(entries: &[(&str, u32, u32, &str)]) -> Vec<u8> {
+    let mut out = vec![];
+    let pad = |x: &mut Vec<u8>| x.resize(x.len().next_multiple_of(4), 0);
+    for (name, mode, count, data) in entries.iter().chain([&("TRAILER!!!", 0, 1, "")]) {
+      // ino, mode, uid, gid, nlink, mtime, filesize, 4 device numbers, namesize, check
+      let size = data.len() as u32;
+      let fields = [1, *mode, 0, 0, *count, 0, size, 0, 0, 0, 0, name.len() as u32 + 1, 0];
+      out.extend(b"070701");
+      out.extend(fields.iter().flat_map(|x| format!("{x:08x}").into_bytes()));
+      out.extend(name.as_bytes());
+      out.push(0);
+      pad(&mut out);
+      out.extend(data.as_bytes());
+      pad(&mut out);
+    }
+
+    out
+  }
+
+  /// A gzip stream of `data` with the header fields `flags` names, its trailer zeros.
+  fn gzip(data: &[u8], flags: u8) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, flags, 0, 0, 0, 0, 0, 3];
+    let fields: [(u8, &[u8]); 4] = [(4, b"\x02\0ab"), (8, b"a.tar\0"), (16, b"hi\0"), (2, b"cc")];
+    for (flag, field) in fields {
+      if flags & flag != 0 {
+        out.extend(field);
+      }
+    }
+
+    out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
+    out.extend([0; 8]);
+    out
+  }
+
+  /// Every package of every target: its sysroot's and its libstdc++'s.
+  fn every_package() -> impl Iterator<Item = &'static Package> {
+    TARGETS.iter().flat_map(|x| x.packages.iter().chain(x.cxx.into_iter().flat_map(|x| x.packages)))
+  }
+
   #[test]
   fn tables_are_pinned() {
-    for pkg in TARGETS.iter().flat_map(|x| x.packages) {
+    for pkg in every_package() {
       let hex = pkg.sha256.bytes().all(|x| x.is_ascii_digit() || (b'a'..=b'f').contains(&x));
       assert!(pkg.sha256.len() == 64 && hex, "{}", pkg.path);
-      assert!(pkg.path.ends_with(".deb") || pkg.path.ends_with(".tar.xz"), "{}", pkg.path);
+      let kinds = [".deb", ".rpm", ".apk", ".tar.xz"];
+      assert!(kinds.iter().any(|x| pkg.path.ends_with(x)), "{}", pkg.path);
       assert!(pkg.mirrors.iter().all(|x| x.starts_with("https://") && !x.ends_with('/')));
       assert!(pkg.root.is_empty() || pkg.root.ends_with('/'));
     }
 
-    // Each sysroot its own folder: targets share one only by its name, as Apple's do.
-    let dirs: Vec<_> = TARGETS
+    // Each sysroot and libstdc++ its own folder: targets share one only by its name, as Apple's do.
+    let cache = Path::new("/c");
+    let sysroots =
+      TARGETS.iter().map(|x| (x.sysroot().to_string(), dir(cache, x.sysroot(), x.packages)));
+    let cxx = TARGETS
       .iter()
-      .map(|x| (x.sysroot(), dir(Path::new("/c"), x.sysroot(), x.packages)))
-      .collect();
+      .filter_map(|x| Some((x.libstdcxx(), dir(cache, &x.libstdcxx(), x.cxx?.packages))));
+    let dirs: Vec<_> = sysroots.chain(cxx).collect();
     for (i, (name, x)) in dirs.iter().enumerate() {
       assert!(dirs[..i].iter().all(|(n, y)| (n == name) == (y == x)), "{}", x.display());
     }
@@ -764,6 +1145,73 @@ mod tests {
   }
 
   #[test]
+  fn xz_skips_the_checks() {
+    let mut none = vec![];
+    lzma_rs::xz_compress(&mut &b"tar"[..], &mut none).unwrap();
+    assert_eq!(xz(&none).unwrap(), b"tar");
+
+    // SHA-256 checks, as AlmaLinux's are, of blocks with sizes, which aren't checked.
+    let mut sha = b"\xfd7zXZ\0\0\x0a\0\0\0\0".to_vec();
+    for part in [&b"t"[..], b"ar"] {
+      sha.extend(b"\x03\xc0\x7f\x81\x01\x21\x01\x16\0\0\0\0\0\0\0\0");
+      lzma_rs::lzma2_compress(&mut &part[..], &mut sha).unwrap();
+      sha.resize(sha.len().next_multiple_of(4) + 32, 0xaa);
+    }
+
+    sha.push(0);
+    assert_eq!(xz(&sha).unwrap(), b"tar");
+    assert!(xz(&sha[..sha.len() - 1]).is_err());
+    // x86's BCJ filter.
+    let mut bcj = sha.clone();
+    bcj[17] = 0x04;
+    assert!(xz(&bcj).unwrap_err().to_string().contains("other than LZMA2"));
+    assert!(xz(b"PK\x03\x04").is_err());
+  }
+
+  #[test]
+  fn payload_skips_an_rpm_s_headers() {
+    assert_eq!(payload(&rpm(b"xz")).unwrap(), b"xz");
+    assert!(payload(&rpm(b"")[..120]).is_err());
+    assert!(payload(b"!<arch>\n").is_err());
+  }
+
+  #[test]
+  fn cpio_writes_the_files_kept() {
+    let root = temp("cpio");
+    let keep = &["include/", "lib/libstdc++.a"];
+    let pkg = Package { root: "usr/", keep, ..Package::deb(BUSTER, "a.rpm", "") };
+    let entries = [
+      ("./usr/include", 0o040755, 2, ""),
+      ("./usr/include/c++/vector", 0o100644, 1, "vector"),
+      ("./usr/include/c++/list", 0o120777, 1, "vector"),
+      ("./usr/lib/libstdc++.a", 0o100644, 1, "a"),
+      ("./usr/lib/libstdc++.so", 0o100644, 1, "so"),
+    ];
+
+    let got = cpio(&newc(&entries), &pkg, &root).unwrap();
+    assert_eq!(got, [("include/c++/list".into(), "include/c++/vector".into())]);
+    assert_eq!(fs::read_to_string(root.join("include/c++/vector")).unwrap(), "vector");
+    assert_eq!(fs::read_to_string(root.join("lib/libstdc++.a")).unwrap(), "a");
+    assert!(!root.join("lib/libstdc++.so").exists());
+
+    let hard = newc(&[("./usr/lib/libstdc++.a", 0o100644, 2, "a")]);
+    assert!(cpio(&hard, &pkg, &root).unwrap_err().to_string().contains("a hard link"));
+    let all = newc(&entries);
+    assert!(cpio(&all[..all.len() - 20], &pkg, &root).is_err());
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn gunzip_joins_an_apk_s_streams() {
+    // Over inflate's chunk.
+    let big: Vec<u8> = (0..200_000u32).map(|x| (x * 7 % 251) as u8).collect();
+    let apk = [gzip(b"sig", 0), gzip(b"control", 8), gzip(&big, 4 | 8 | 16 | 2)].concat();
+    assert_eq!(gunzip(&apk).unwrap(), [&b"sigcontrol"[..], &big].concat());
+    assert!(gunzip(&apk[..apk.len() - 4]).is_err());
+    assert!(gunzip(b"PK\x03\x04").is_err());
+  }
+
+  #[test]
   fn ensure_tries_the_next_mirror_and_checks_the_hash() {
     let root = temp("ensure");
     let tar = tarball(&[("./usr/include/a.h", "a")], &[]);
@@ -849,11 +1297,11 @@ mod tests {
   }
 
   #[test]
-  #[ignore = "downloads every package from every mirror, ~160 MB"]
+  #[ignore = "downloads every package from every mirror, ~240 MB"]
   fn every_package_is_on_every_mirror() {
     let root = temp("mirrors");
     let mut done = vec![];
-    for pkg in TARGETS.iter().flat_map(|x| x.packages) {
+    for pkg in every_package() {
       for mirror in pkg.mirrors {
         // Shared by targets, or one file's parts.
         if done.contains(&(mirror, pkg.path)) {

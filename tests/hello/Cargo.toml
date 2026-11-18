@@ -13,3 +13,4 @@ ring = "0.17.14"
 
 [build-dependencies]
 cc = "1.11.2"
+cmake = "0.1.58"

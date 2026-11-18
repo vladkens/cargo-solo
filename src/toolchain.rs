@@ -1,14 +1,15 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
 //! Each target's toolchain: the targets cargo-solo sets up, the host's clang and rustup's lld and
-//! llvm-ar they share, the environment cargo runs with, and the wrapper: this program run as a
-//! target's C compiler and linker, which adds the target's flags to clang's.
+//! llvm-ar they share, the environment cargo runs with, its cmake toolchain file, and the wrapper:
+//! this program run as a target's C and C++ compiler and linker, which adds the target's flags to
+//! clang's.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs, io};
 
-use crate::packages::{self, Libc, Package};
+use crate::packages::{self, Cxx, Libc, Package};
 use crate::{bad, run};
 
 /// The wrapper's clang, set by cargo-solo.
@@ -38,6 +39,8 @@ pub struct Target {
   pub clang: &'static str,
   pub libc: Libc,
   pub packages: &'static [Package],
+  /// Its libstdc++, but for Apple's: C only.
+  pub cxx: Option<&'static Cxx>,
 }
 
 pub const TARGETS: [Target; 7] = [
@@ -46,42 +49,49 @@ pub const TARGETS: [Target; 7] = [
     clang: "x86_64-linux-gnu",
     libc: Libc::Glibc,
     packages: packages::GLIBC_X64,
+    cxx: Some(&packages::CXX_GLIBC_X64),
   },
   Target {
     rust: "aarch64-unknown-linux-gnu",
     clang: "aarch64-linux-gnu",
     libc: Libc::Glibc,
     packages: packages::GLIBC_ARM64,
+    cxx: Some(&packages::CXX_GLIBC_ARM64),
   },
   Target {
     rust: "x86_64-unknown-linux-musl",
     clang: "x86_64-linux-musl",
     libc: Libc::Musl,
     packages: packages::MUSL_X64,
+    cxx: Some(&packages::CXX_MUSL_X64),
   },
   Target {
     rust: "aarch64-unknown-linux-musl",
     clang: "aarch64-linux-musl",
     libc: Libc::Musl,
     packages: packages::MUSL_ARM64,
+    cxx: Some(&packages::CXX_MUSL_ARM64),
   },
   Target {
     rust: "x86_64-pc-windows-gnu",
     clang: "x86_64-w64-mingw32",
     libc: Libc::Mingw,
     packages: packages::MINGW_X64,
+    cxx: Some(&packages::CXX_MINGW_X64),
   },
   Target {
     rust: "aarch64-apple-darwin",
     clang: "arm64-apple-macos",
     libc: Libc::Darwin,
     packages: packages::DARWIN,
+    cxx: None,
   },
   Target {
     rust: "x86_64-apple-darwin",
     clang: "x86_64-apple-macos",
     libc: Libc::Darwin,
     packages: packages::DARWIN,
+    cxx: None,
   },
 ];
 
@@ -105,10 +115,28 @@ impl Target {
     }
   }
 
-  /// The target whose wrapper `arg0` runs: `<target>-clang`.
-  pub fn wrapped(arg0: &OsStr) -> Option<&'static Target> {
+  /// The target whose wrapper `arg0` runs, and whether it runs as the C++ compiler:
+  /// `<target>-clang` or `<target>-clang++`.
+  pub fn wrapped(arg0: &OsStr) -> Option<(&'static Target, bool)> {
     let stem = Path::new(arg0).file_stem()?.to_str()?;
-    Target::find(stem.strip_suffix("-clang")?)
+    match stem.strip_suffix("-clang++") {
+      Some(x) => Some((Target::find(x)?, true)),
+      None => Some((Target::find(stem.strip_suffix("-clang")?)?, false)),
+    }
+  }
+
+  /// The name of the folder with this target's libstdc++, in the cache.
+  pub fn libstdcxx(&self) -> String {
+    format!("{}-libstdc++", self.clang)
+  }
+
+  /// cc's and cmake-rs's names for this target's variable `base`, in the order they read them,
+  /// before `base` itself: `<base>_<target>` (cargo-solo's), `<base>_<target_u>`,
+  /// `TARGET_<base>`, or `HOST_<base>` when it's the `host`'s own.
+  pub fn names(&self, base: &str, host: &str) -> [String; 3] {
+    let under = self.rust.replace('-', "_");
+    let kind = if self.rust == host { "HOST" } else { "TARGET" };
+    [format!("{base}_{}", self.rust), format!("{base}_{under}"), format!("{kind}_{base}")]
   }
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
@@ -196,6 +224,158 @@ impl Target {
 
     out
   }
+
+  /// The flags the wrapper adds for C++ after [flags](Target::flags), libstdc++'s folder at `dir`:
+  /// as `<target>-clang++` (`cxx`), clang as g++ with libstdc++'s headers, and to link, the folder
+  /// and what GCC's g++ links for the target. As `<target>-clang`, the folder only, for a link that
+  /// names `-lstdc++`, as rustc's of a crate's C++ through cc does.
+  pub fn cxx_flags(&self, dir: &Path, cxx: bool, args: &[OsString]) -> Vec<OsString> {
+    let Some(lib) = self.cxx else {
+      return vec![];
+    };
+
+    let mut out = vec![];
+    if cxx {
+      out.push("--driver-mode=g++".into());
+      let include = dir.join(lib.include);
+      for x in [include.clone(), include.join(lib.triple), include.join("backward")] {
+        out.push("-stdlib++-isystem".into());
+        out.push(x.into());
+      }
+
+      // GCC's libstdc++ for Windows keeps its thread_locals, as std::call_once's, in emulated TLS.
+      if self.libc == Libc::Mingw {
+        out.push("-femulated-tls".into());
+      }
+    }
+
+    if compiles(args) {
+      return out;
+    }
+
+    out.push(cat("-L", &dir.join(lib.lib)));
+    if !cxx {
+      return out;
+    }
+
+    match self.libc {
+      // glibc 2.28 has its threads in libpthread.
+      Libc::Glibc => out.push("-pthread".into()),
+      // libgcc and winpthreads static, as rustc links them, not their DLLs.
+      Libc::Mingw => out.extend(["-static-libgcc".into(), "-l:libpthread.a".into()]),
+      Libc::Musl | Libc::Darwin => {}
+    }
+
+    if lib.libgcc {
+      out.push(dir.join("libgcc.a").into());
+    }
+
+    out
+  }
+
+  /// The cmake toolchain file for this target, its sysroot at `dir`: the system, the `tools` by
+  /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and as where to find
+  /// libraries, headers and packages, never programs, the sysroot (for Apple, the SDK in SDKROOT)
+  /// and cargo's build folder. Paths with `/`, as cmake reads them on Windows too.
+  pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)], host: &str) -> String {
+    let path = |x: &Path| x.to_string_lossy().replace('\\', "/");
+    let arch = |x: &'static str| x.split('-').next().unwrap_or_default();
+    // As cmake-rs names them.
+    let (system, cpu) = match self.libc {
+      Libc::Mingw => ("Windows", "AMD64"),
+      Libc::Darwin => ("Darwin", arch(self.clang)),
+      _ => ("Linux", arch(self.rust)),
+    };
+
+    let mut out = format!("# cargo-solo's for {}\n", self.rust);
+    out += &format!("set(CMAKE_SYSTEM_NAME {system})\nset(CMAKE_SYSTEM_PROCESSOR {cpu})\n");
+    match self.libc {
+      Libc::Mingw => {
+        let usr = dir.join("usr");
+        out += &format!("set(CMAKE_SYSROOT \"{}\")\n", path(&usr));
+        // mingw-w64's libraries are in its own folder of the sysroot.
+        out += &format!("set(CMAKE_FIND_ROOT_PATH \"{}\")\n", path(&usr.join(self.clang)));
+      }
+      Libc::Darwin => out += CMAKE_SDK,
+      _ => out += &format!("set(CMAKE_SYSROOT \"{}\")\n", path(dir)),
+    }
+
+    for (name, x) in tools {
+      out += &format!("set(CMAKE_{name} \"{}\")\n", path(x));
+    }
+
+    let names = self.names("CXX", host).join(" ");
+    out += &CMAKE_CXX.replace("NAMES", &names).replace("WRAPPERS", WRAPPERS);
+    out += CMAKE_BUILD;
+    let modes =
+      [("PROGRAM", "NEVER"), ("LIBRARY", "ONLY"), ("INCLUDE", "ONLY"), ("PACKAGE", "ONLY")];
+    for (kind, mode) in modes {
+      out += &format!("set(CMAKE_FIND_ROOT_PATH_MODE_{kind} {mode})\n");
+    }
+
+    out
+  }
+}
+
+/// The toolchain file's C++ compiler, cc's: the first of cc's variables (NAMES) set, the user's or
+/// cargo-solo's wrapper, read as cc reads it: a path, or else words, the compiler and its flags,
+/// after a wrapper cc knows, such as sccache, which runs it. cmake-rs passes no compiler with a
+/// toolchain file, nor those flags.
+const CMAKE_CXX: &str = r#"foreach(x NAMES)
+  if(DEFINED ENV{${x}})
+    file(TO_CMAKE_PATH "$ENV{${x}}" CMAKE_CXX_COMPILER)
+    if(NOT EXISTS "${CMAKE_CXX_COMPILER}")
+      string(REGEX MATCHALL "[^ \t]+" CMAKE_CXX_COMPILER "$ENV{${x}}")
+    endif()
+    list(LENGTH CMAKE_CXX_COMPILER _cargo_solo_n)
+    if(_cargo_solo_n GREATER 1)
+      set(_cargo_solo_wrappers WRAPPERS "$ENV{CC_KNOWN_WRAPPER_CUSTOM}")
+      string(TOLOWER "${_cargo_solo_wrappers}" _cargo_solo_wrappers)
+      list(GET CMAKE_CXX_COMPILER 0 _cargo_solo_name)
+      get_filename_component(_cargo_solo_name "${_cargo_solo_name}" NAME_WE)
+      string(TOLOWER "${_cargo_solo_name}" _cargo_solo_name)
+      list(FIND _cargo_solo_wrappers "${_cargo_solo_name}" _cargo_solo_i)
+      if(_cargo_solo_i GREATER -1)
+        list(GET CMAKE_CXX_COMPILER 0 CMAKE_CXX_COMPILER_LAUNCHER)
+        list(REMOVE_AT CMAKE_CXX_COMPILER 0)
+      endif()
+    endif()
+    break()
+  endif()
+endforeach()
+"#;
+
+/// The wrappers cc knows, in [CMAKE_CXX].
+const WRAPPERS: &str = "ccache distcc sccache icecc cachepot buildcache kache";
+
+/// The toolchain file's SDK for Apple, the wrapper's: SDKROOT, cargo-solo's or the user's, which
+/// cmake reads itself only as a path with `/`.
+const CMAKE_SDK: &str = r#"file(TO_CMAKE_PATH "$ENV{SDKROOT}" CMAKE_OSX_SYSROOT)
+set(CMAKE_FIND_ROOT_PATH "${CMAKE_OSX_SYSROOT}")
+"#;
+
+/// The toolchain file's folder of cargo's build scripts, three up from OUT_DIR's, to find in too:
+/// another crate's build script puts what this one's cmake finds there, as libz-sys its zlib for
+/// rdkafka-sys. The sysroot alone as the root would move those paths under it.
+const CMAKE_BUILD: &str = r#"if(DEFINED ENV{OUT_DIR})
+  file(TO_CMAKE_PATH "$ENV{OUT_DIR}/../../.." _cargo_solo_build)
+  get_filename_component(_cargo_solo_build "${_cargo_solo_build}" ABSOLUTE)
+  list(APPEND CMAKE_FIND_ROOT_PATH "${_cargo_solo_build}")
+  unset(_cargo_solo_build)
+endif()
+"#;
+
+/// Whether clang only compiles with `args`, links nothing.
+fn compiles(args: &[OsString]) -> bool {
+  args.iter().any(|x| ["-c", "-E", "-S", "-M", "-MM"].iter().any(|f| x == f))
+}
+
+/// Whether `args` name `-lstdc++`, or a response file of rustc's does, one per line.
+fn links_stdcxx(args: &[OsString]) -> bool {
+  let file = |x: &OsStr| x.to_str()?.strip_prefix('@').and_then(|x| fs::read_to_string(x).ok());
+  args
+    .iter()
+    .any(|x| x == "-lstdc++" || file(x).is_some_and(|x| x.lines().any(|x| x.trim() == "-lstdc++")))
 }
 
 fn cat(flag: &str, path: &Path) -> OsString {
@@ -257,9 +437,10 @@ impl Host {
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
   /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, its
-  /// sysroot for [pkg-config](Target::pkg_config) and [bindgen](Target::bindgen), for Windows
-  /// aws-lc-sys's NASM objects, for Apple the [SDK and the oldest macOS](Host::darwin), each but
-  /// the tools unless the user chose it in cargo's `args`, config or environment.
+  /// [C++ and cmake](Host::cxx), its sysroot for [pkg-config](Target::pkg_config) and
+  /// [bindgen](Target::bindgen), for Windows aws-lc-sys's NASM objects, for Apple the
+  /// [SDK and the oldest macOS](Host::darwin), each but the tools unless the user chose it in
+  /// cargo's `args`, config or environment.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     // First, as it checks the tools before any download.
     let darwin = match target.libc {
@@ -272,11 +453,16 @@ impl Host {
     }
 
     let sysroot = packages::ensure(&self.cache, target.sysroot(), target.packages)?;
-    let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
+    // libstdc++'s by its name only: it's fetched on the first C++ compile.
+    let libs = target.cxx.map_or(&[][..], |x| x.packages);
+    let cxx_dir = packages::dir(&self.cache, &target.libstdcxx(), libs);
+    let [cc, cxx] = wrapper(&self.cache.join("bin"), target, [&sysroot, &cxx_dir])?;
     let ar = self.bin.join(exe("llvm-ar"));
     let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
     let mut out = target.env(&cc, &ar, &dir).to_vec();
     out.extend(darwin);
+    out.extend(self.cxx(target, &sysroot, [&cc, &cxx], &dir, args)?);
+
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
@@ -348,6 +534,70 @@ impl Host {
     out.extend(vers.into_iter().min_by_key(key).map(|x| (DEPLOYMENT_TARGET.into(), x.into())));
     Ok(out)
   }
+
+  /// The environment for `target`'s C++ and cmake, with its `sysroot`, wrappers and the folder of
+  /// its [tools](tools): `CXX_<t>` the wrapper as clang++, but for Apple, which has no C++
+  /// library, `CMAKE_TOOLCHAIN_FILE_<t>` the target's toolchain file, and on a Windows
+  /// host with ninja on PATH, Ninja for cmake's generator, where cmake-rs would take Visual Studio
+  /// or MinGW's make; each unless the user chose.
+  fn cxx(
+    &self,
+    target: &Target,
+    sysroot: &Path,
+    [cc, cxx]: [&Path; 2],
+    tools: &Path,
+    args: &[OsString],
+  ) -> io::Result<Vec<(String, OsString)>> {
+    let here = env::current_dir()?;
+    // cc reads `CXX` for the host too, cmake-rs its own for every target.
+    let free = |base: &str, plain: bool| {
+      let names = target.names(base, &self.triple);
+      let mut vars: Vec<_> = names.iter().map(String::as_str).collect();
+      vars.extend(plain.then_some(base));
+      (!chosen(&vars, args, &here)).then(|| names[0].clone())
+    };
+
+    let mut out = vec![];
+    if target.cxx.is_some()
+      && let Some(name) = free("CXX", false)
+    {
+      out.push((name, cxx.into()));
+    }
+
+    // For Apple, cmake's C++ compiler is the C one, which compiles the C++ that needs no library,
+    // as cmake's check of its C++ compiler does.
+    let cxx = if target.cxx.is_some() { cxx } else { cc };
+
+    if let Some(name) = free("CMAKE_TOOLCHAIN_FILE", true) {
+      let (ar, nm) = (self.bin.join(exe("llvm-ar")), self.bin.join(exe("llvm-nm")));
+      // The host's ranlib, as macOS's, can't read the target's objects.
+      let ranlib = tools.join(exe(&format!("{}-ranlib", target.rust)));
+      let name_tool = tools.join(exe(&format!("{}-install_name_tool", target.rust)));
+      let mut tools = vec![
+        ("C_COMPILER", cc),
+        ("CXX_COMPILER", cxx),
+        ("ASM_COMPILER", cc),
+        ("AR", &ar),
+        ("RANLIB", &ranlib),
+        ("NM", &nm),
+      ];
+      if target.libc == Libc::Darwin {
+        tools.push(("INSTALL_NAME_TOOL", &name_tool));
+      }
+
+      let text = target.cmake(sysroot, &tools, &self.triple);
+      let bin = self.cache.join("bin");
+      let path = folder(&bin, OsStr::new(&text)).join(format!("{}.cmake", target.rust));
+      put(&path, &text)?;
+      out.push((name, path.into()));
+    }
+
+    if cfg!(windows) && which("ninja").is_some() {
+      out.extend(free("CMAKE_GENERATOR", true).map(|x| (x, "Ninja".into())));
+    }
+
+    Ok(out)
+  }
 }
 
 /// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside comments
@@ -355,9 +605,8 @@ impl Host {
 /// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
 /// needs.
 fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
-  let named = |x: &str| {
-    x.split(|x: char| !x.is_alphanumeric() && !"_-".contains(x)).any(|x| vars.contains(&x))
-  };
+  let name = |x: char| x.is_alphanumeric() || x == '_' || x == '-';
+  let named = |x: &str| x.split(|x| !name(x)).any(|x| vars.contains(&x));
   let args: Vec<_> = args.iter().map(|x| x.to_string_lossy()).collect();
   if vars.iter().any(|x| env::var_os(x).is_some()) || args.iter().any(|x| named(x)) {
     return true;
@@ -438,17 +687,24 @@ fn rustup(sysroot: &Path, args: &[&str]) -> io::Result<()> {
 
 // MARK: Wrapper
 
-/// The wrapper for `target`, `<target>-clang`: a link to this program in a folder of `bin` that its
-/// path and the target's `sysroot` name. So a build never runs another cargo-solo, with other
-/// tables, and when the sysroot changes, cargo and cc-rs see another `CC_<t>` and linker, and build
-/// anew.
-fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
+/// The wrappers for `target`, `<target>-clang` and `<target>-clang++`: links to this program in a
+/// folder of `bin` that its path and the target's `dirs`, its sysroot's and libstdc++'s, name. So a
+/// build never runs another cargo-solo, with other tables, and when either changes, cargo and cc-rs
+/// see another `CC_<t>`, `CXX_<t>` and linker, and build anew.
+fn wrapper(bin: &Path, target: &Target, dirs: [&Path; 2]) -> io::Result<[PathBuf; 2]> {
   let me = env::current_exe()?.canonicalize()?;
   let mut key = me.as_os_str().to_owned();
-  key.push(sysroot);
-  let path = folder(bin, &key).join(exe(&format!("{}-clang", target.rust)));
-  place(&me, &path)?;
-  Ok(path)
+  for dir in dirs {
+    key.push(dir);
+  }
+
+  let dir = folder(bin, &key);
+  let out = ["clang", "clang++"].map(|x| dir.join(exe(&format!("{}-{x}", target.rust))));
+  for path in &out {
+    place(&me, path)?;
+  }
+
+  Ok(out)
 }
 
 /// The folder for PATH with the binutils of `target` by the names a configure script looks for
@@ -456,17 +712,22 @@ fn wrapper(bin: &Path, target: &Target, sysroot: &Path) -> io::Result<PathBuf> {
 /// own, such as macOS's ar, can't read the target's objects. They are links to rustup's tools in
 /// `llvm`: llvm-ar, which runs as ranlib by that name, and llvm-nm. For Windows, also rustc's
 /// dlltool, which makes import libraries for the DLLs that `raw-dylib` links name, as
-/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere.
+/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere. For Apple,
+/// llvm-objcopy as `<target>-install_name_tool`, which it runs as by that name, for cmake, which
+/// stops without one.
 fn tools(bin: &Path, target: &Target, llvm: &Path) -> io::Result<PathBuf> {
   let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+  let objcopy = llvm.join(exe("llvm-objcopy"));
   let tools = [("ar", &ar), ("ranlib", &ar), ("nm", &nm)];
   let triples = [target.rust, target.clang];
   let mut names: Vec<_> =
     triples.iter().flat_map(|t| tools.map(|(x, to)| (to, format!("{t}-{x}")))).collect();
 
-  if target.libc == Libc::Mingw {
-    let name = if cfg!(windows) { "dlltool".into() } else { format!("{}-dlltool", target.clang) };
-    names.push((&ar, name));
+  match target.libc {
+    Libc::Mingw if cfg!(windows) => names.push((&ar, "dlltool".into())),
+    Libc::Mingw => names.push((&ar, format!("{}-dlltool", target.clang))),
+    Libc::Darwin => names.push((&objcopy, format!("{}-install_name_tool", target.rust))),
+    _ => {}
   }
 
   let dir = folder(bin, llvm.as_os_str());
@@ -506,6 +767,24 @@ fn place(to: &Path, path: &Path) -> io::Result<()> {
   }
 }
 
+/// Writes `text` to `path` when it's not there, as [place] puts a link.
+fn put(path: &Path, text: &str) -> io::Result<()> {
+  if fs::read_to_string(path).is_ok_and(|x| x == text) {
+    return Ok(());
+  }
+
+  let dir = path.parent().unwrap_or(Path::new("."));
+  fs::create_dir_all(dir)?;
+  let name = path.file_name().unwrap_or_default().to_string_lossy();
+  let part = dir.join(format!(".{name}-{}", std::process::id()));
+  let done = fs::write(&part, text).and_then(|()| fs::rename(&part, path));
+  let _ = fs::remove_file(&part);
+  match done {
+    Err(_) if fs::read_to_string(path).is_ok_and(|x| x == text) => Ok(()),
+    x => x,
+  }
+}
+
 #[cfg(unix)]
 fn link(to: &Path, path: &Path) -> io::Result<()> {
   std::os::unix::fs::symlink(to, path)
@@ -530,21 +809,29 @@ fn runs(path: &Path, to: &Path) -> bool {
 }
 
 /// The clang that the wrapper for `target` runs for `args`: with them, then the target's
-/// [flags](Target::flags).
-pub fn wrap(target: &Target, args: Vec<OsString>) -> io::Result<Command> {
+/// [flags](Target::flags), and as clang++ (`cxx`) or for a link with libstdc++, its
+/// [C++ flags](Target::cxx_flags), libstdc++ fetched first when it's not there.
+pub fn wrap(target: &Target, cxx: bool, args: Vec<OsString>) -> io::Result<Command> {
   let var = |name| {
     let hint = format!("{name} is not set: {}-clang runs under `cargo solo`", target.rust);
     env::var_os(name).ok_or_else(|| bad(hint))
   };
 
   let (clang, gcc_ld) = (var(CLANG)?, var(GCC_LD)?);
+  let cache = packages::cache()?;
   let sdk = env::var_os(SDKROOT).filter(|x| target.libc == Libc::Darwin && !x.is_empty());
   let dir = match sdk {
     Some(x) => PathBuf::from(x),
-    None => packages::dir(&packages::cache()?, target.sysroot(), target.packages),
+    None => packages::dir(&cache, target.sysroot(), target.packages),
   };
 
-  let flags = target.flags(&dir, Path::new(&gcc_ld), &args);
+  let mut flags = target.flags(&dir, Path::new(&gcc_ld), &args);
+  if cxx || links_stdcxx(&args) {
+    let lib = target.cxx.ok_or_else(|| bad(format!("no C++ for {}: only C", target.rust)))?;
+    let dir = packages::ensure(&cache, &target.libstdcxx(), lib.packages)?;
+    flags.extend(target.cxx_flags(&dir, cxx, &args));
+  }
+
   let mut cmd = Command::new(clang);
   cmd.args(args).args(flags);
   Ok(cmd)
@@ -569,17 +856,32 @@ mod tests {
 
   #[test]
   fn wrapped_reads_the_wrapper_s_name() {
-    let got = |x: &str| Target::wrapped(OsStr::new(x)).map(|x| x.rust);
-    let gnu = Some("x86_64-unknown-linux-gnu");
-    assert_eq!(got("/cache/bin/x86_64-unknown-linux-gnu-clang"), gnu);
-    assert_eq!(got("x86_64-unknown-linux-gnu-clang"), gnu);
-    assert_eq!(got("C:/cache/bin/x86_64-pc-windows-gnu-clang.exe"), Some("x86_64-pc-windows-gnu"));
+    let got = |x: &str| Target::wrapped(OsStr::new(x)).map(|(x, cxx)| (x.rust, cxx));
+    let gnu = "x86_64-unknown-linux-gnu";
+    assert_eq!(got("/cache/bin/x86_64-unknown-linux-gnu-clang"), Some((gnu, false)));
+    assert_eq!(got("x86_64-unknown-linux-gnu-clang"), Some((gnu, false)));
+    assert_eq!(got("/cache/bin/x86_64-unknown-linux-gnu-clang++"), Some((gnu, true)));
+    let mingw = Some(("x86_64-pc-windows-gnu", true));
+    assert_eq!(got("C:/cache/bin/x86_64-pc-windows-gnu-clang++.exe"), mingw);
     assert_eq!(got("/usr/bin/clang"), None);
+    assert_eq!(got("/usr/bin/clang++"), None);
     assert_eq!(got("aarch64-linux-android-clang"), None);
+    assert_eq!(got("x86_64-unknown-linux-gnu-ranlib"), None);
     assert_eq!(got("cargo-solo"), None);
     // On a Mac, Apple's targets are cargo's.
-    let apple = (env::consts::OS != "macos").then_some("aarch64-apple-darwin");
+    let apple = (env::consts::OS != "macos").then_some(("aarch64-apple-darwin", false));
     assert_eq!(got("aarch64-apple-darwin-clang"), apple);
+  }
+
+  #[test]
+  fn names_are_cc_s_and_cmake_rs_s() {
+    let target = Target::find("aarch64-unknown-linux-musl").unwrap();
+    let mut names =
+      ["CXX_aarch64-unknown-linux-musl", "CXX_aarch64_unknown_linux_musl", "TARGET_CXX"];
+    assert_eq!(target.names("CXX", "aarch64-apple-darwin"), names);
+    // cc's and cmake-rs's for a build for the host itself.
+    names[2] = "HOST_CXX";
+    assert_eq!(target.names("CXX", "aarch64-unknown-linux-musl"), names);
   }
 
   #[test]
@@ -600,8 +902,10 @@ mod tests {
     let llvm = dir.join("llvm");
     fs::create_dir_all(&llvm).unwrap();
     let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
+    let objcopy = llvm.join(exe("llvm-objcopy"));
     fs::write(&ar, "ar").unwrap();
     fs::write(&nm, "nm").unwrap();
+    fs::write(&objcopy, "objcopy").unwrap();
 
     let musl = tools(&dir, Target::find("x86_64-unknown-linux-musl").unwrap(), &llvm).unwrap();
     for (to, name) in [(&ar, "x86_64-unknown-linux-musl-ar"), (&ar, "x86_64-linux-musl-ranlib")] {
@@ -616,6 +920,11 @@ mod tests {
     assert_eq!(mingw, musl);
     assert!(runs(&mingw.join(exe(dlltool)), &ar));
     assert!(runs(&mingw.join(exe("x86_64-w64-mingw32-ar")), &ar));
+    assert!(!mingw.join(exe("aarch64-apple-darwin-install_name_tool")).exists());
+
+    let apple = TARGETS.iter().find(|x| x.rust == "aarch64-apple-darwin").unwrap();
+    let apple = tools(&dir, apple, &llvm).unwrap();
+    assert!(runs(&apple.join(exe("aarch64-apple-darwin-install_name_tool")), &objcopy));
     fs::remove_dir_all(&dir).unwrap();
   }
 
@@ -721,5 +1030,79 @@ mod tests {
       apple.iter().all(|x| x.sysroot() == "macos" && x.here() == (env::consts::OS != "macos"))
     );
     assert_eq!(Target::find("x86_64-unknown-linux-gnu").unwrap().sysroot(), "x86_64-linux-gnu");
+    // C only for Apple's.
+    assert!(TARGETS.iter().all(|x| x.cxx.is_none() == (x.libc == Libc::Darwin)));
+  }
+
+  #[test]
+  fn cxx_flags_are_g_plus_plus_s() {
+    let dir = Path::new("/c/cxx");
+    let flags = |name, cxx, line| {
+      let target = Target::find(name).unwrap();
+      let got = target.cxx_flags(dir, cxx, &args(line));
+      got.iter().map(|x| x.to_str().unwrap().replace('\\', "/")).collect::<Vec<_>>().join(" ")
+    };
+
+    let gnu = "x86_64-unknown-linux-gnu";
+    let include = "/c/cxx/include/c++/14";
+    let headers = format!(
+      "--driver-mode=g++ -stdlib++-isystem {include} -stdlib++-isystem \
+       {include}/x86_64-redhat-linux -stdlib++-isystem {include}/backward"
+    );
+    let lib = "-L/c/cxx/lib/gcc/x86_64-redhat-linux/14";
+    assert_eq!(flags(gnu, true, "-c a.cc"), headers);
+    assert_eq!(flags(gnu, true, "a.o -o a"), format!("{headers} {lib} -pthread"));
+    // rustc's link of a crate's C++, which names -lstdc++.
+    assert_eq!(flags(gnu, false, "a.o -lstdc++ -o a"), lib);
+
+    let musl = flags("aarch64-unknown-linux-musl", true, "a.o -o a");
+    assert!(
+      musl.contains("-stdlib++-isystem /c/cxx/include/c++/14.2.0/aarch64-alpine-linux-musl ")
+    );
+    assert!(musl.ends_with(" -L/c/cxx/lib /c/cxx/libgcc.a"));
+
+    let mingw = flags("x86_64-pc-windows-gnu", true, "a.o -o a.exe");
+    assert!(mingw.contains("/c/cxx/14-posix/include/c++/x86_64-w64-mingw32 "));
+    assert!(mingw.ends_with(" -femulated-tls -L/c/cxx/14-posix -static-libgcc -l:libpthread.a"));
+  }
+
+  #[test]
+  fn links_stdcxx_reads_rustc_s_response_file() {
+    let file = env::temp_dir().join(format!("cargo-solo-args-{}", std::process::id()));
+    fs::write(&file, "a.o\n-lstdc++\n-lc\n").unwrap();
+    let mut with = args("-o a");
+    with.push(cat("@", &file));
+    assert!(links_stdcxx(&with));
+    assert!(links_stdcxx(&args("a.o -lstdc++ -o a")));
+    fs::write(&file, "a.o\n-lc\n").unwrap();
+    assert!(!links_stdcxx(&with));
+    assert!(!links_stdcxx(&args("a.o -lstdc -o a")));
+    fs::remove_file(file).unwrap();
+  }
+
+  #[test]
+  fn cmake_names_the_system_sysroot_and_tools() {
+    const HOST: &str = "aarch64-apple-darwin";
+    let gnu = Target::find("aarch64-unknown-linux-gnu").unwrap();
+    let text = gnu.cmake(Path::new("/c/sr"), &[("C_COMPILER", Path::new("/c/b/cc"))], HOST);
+    assert!(text.contains("set(CMAKE_SYSTEM_NAME Linux)\nset(CMAKE_SYSTEM_PROCESSOR aarch64)\n"));
+    assert!(text.contains("set(CMAKE_SYSROOT \"/c/sr\")\nset(CMAKE_C_COMPILER \"/c/b/cc\")\n"));
+    assert!(text.contains("set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"));
+    assert!(!text.contains("set(CMAKE_FIND_ROOT_PATH "));
+    assert!(text.contains("list(APPEND CMAKE_FIND_ROOT_PATH \"${_cargo_solo_build}\")\n"));
+    let names = "CXX_aarch64-unknown-linux-gnu CXX_aarch64_unknown_linux_gnu TARGET_CXX";
+    assert!(text.contains(&format!("foreach(x {names})\n")));
+
+    let mingw = Target::find("x86_64-pc-windows-gnu").unwrap();
+    let text = mingw.cmake(Path::new(r"C:\c\sr"), &[("AR", Path::new(r"C:\r\llvm-ar.exe"))], HOST);
+    assert!(text.contains("set(CMAKE_SYSTEM_NAME Windows)\nset(CMAKE_SYSTEM_PROCESSOR AMD64)\n"));
+    assert!(text.contains("set(CMAKE_FIND_ROOT_PATH \"C:/c/sr/usr/x86_64-w64-mingw32\")\n"));
+    assert!(text.contains("set(CMAKE_AR \"C:/r/llvm-ar.exe\")\n"));
+
+    let mac = TARGETS.iter().find(|x| x.rust == "aarch64-apple-darwin").unwrap();
+    let text = mac.cmake(Path::new("/c/sdk"), &[("CXX_COMPILER", Path::new("/c/b/cc"))], HOST);
+    assert!(text.contains("set(CMAKE_SYSTEM_NAME Darwin)\nset(CMAKE_SYSTEM_PROCESSOR arm64)\n"));
+    assert!(text.contains("file(TO_CMAKE_PATH \"$ENV{SDKROOT}\" CMAKE_OSX_SYSROOT)\n"));
+    assert!(!text.contains("/c/sdk") && !text.contains("CMAKE_SYSROOT"));
   }
 }

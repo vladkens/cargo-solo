@@ -66,11 +66,12 @@ Usage: cargo solo <cargo command> [args]...
   cargo solo build --release --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
   cargo solo clippy --target aarch64-unknown-linux-musl
 
-Each of these --targets gets its C compiler, linker and libc; any other goes to cargo as is:
+Each of these --targets gets its C compiler, linker and libc, and, but for macOS, its C++ compiler
+and cmake toolchain file; any other goes to cargo as is:
 {targets}
-Needs clang, and rustup to add a target or llvm-tools when missing. Each target's libc comes from
-Debian's packages (Apple's SDK from Zig's source) on first use, cached in
-{cache} (CARGO_SOLO_CACHE).
+Needs clang, and rustup to add a target or llvm-tools when missing; cmake for crates built with it,
+and on Windows ninja. Each target's libc comes from Debian's packages (Apple's SDK from Zig's
+source) on first use, its libstdc++ on the first C++ compile, cached in {cache} (CARGO_SOLO_CACHE).
 "
   )
 }
