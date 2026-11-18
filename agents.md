@@ -16,7 +16,7 @@ Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-work
 ## Code
 
 - Start every `.rs` file with `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo`, then a `//!` doc whose first sentence says what the file does.
-- A file holds one feature (the arguments, a target's toolchain, the packages), not one helper each. Inside a file, `// MARK: <name>` separates its blocks.
+- A file holds one feature (the arguments, cargo's config, a target's toolchain, the packages, unpacking them), not one helper each. Inside a file, `// MARK: <name>` separates its blocks.
 - A comment adds what the code doesn't say, briefly: a toolchain quirk, why a package or a flag is needed. It never restates the code. Code taken from another project names it in the file's header (project, licence, link to the file); code moved from the person's own projects says nothing of where it came from.
 - Helper scripts go in `scripts/`, kebab-case, Python run with `uv run`.
 

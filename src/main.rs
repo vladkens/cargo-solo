@@ -2,8 +2,10 @@
 //! `cargo solo`: runs a cargo command with each `--target`'s C compiler, linker and libc set up.
 
 mod args;
+mod config;
 mod packages;
 mod toolchain;
+mod unpack;
 
 use std::process::{Command, ExitCode};
 use std::{env, io};
@@ -43,7 +45,7 @@ fn start() -> io::Result<()> {
   // Without a --target, cargo builds for its config's build.target, else for the host.
   if targets.is_empty() {
     let var = env::var("CARGO_BUILD_TARGET").ok();
-    targets = toolchain::configured(&args, var.as_deref(), &env::current_dir()?);
+    targets = config::configured(&args, var.as_deref(), &env::current_dir()?);
   }
 
   // cargo runs a subcommand with CARGO set to itself, so `cargo +nightly solo` stays on nightly.
