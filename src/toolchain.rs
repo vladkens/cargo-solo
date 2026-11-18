@@ -612,9 +612,8 @@ impl Host {
 }
 
 /// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside comments
-/// in a config file it reads: a `.toml` that `args` name, and `config.toml` in `.cargo`
-/// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
-/// needs.
+/// in a config file it reads: a `.toml` that `args` name, and those of `configs`. By the name
+/// alone, which is all a choice needs.
 fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
   let name = |x: char| x.is_alphanumeric() || x == '_' || x == '-';
   let named = |x: &str| x.split(|x| !name(x)).any(|x| vars.contains(&x));
@@ -625,7 +624,7 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
 
   let given = args.iter().map(|x| here.join(x.strip_prefix("--config=").unwrap_or(x)));
   let given = given.filter(|x| x.extension().is_some_and(|x| x == "toml"));
-  let mut texts = given.chain(configs(here)).filter_map(|x| fs::read_to_string(x).ok());
+  let mut texts = given.flat_map(|x| included(&x, NESTED)).chain(configs(here));
   texts.any(|x| x.lines().any(|x| named(code(x))))
 }
 
@@ -635,10 +634,12 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
 /// `--config`'s, `env` or the nearest file's.
 pub fn configured(args: &[OsString], env: Option<&str>, here: &Path) -> Vec<String> {
   let given = args::values(args, "--config");
-  let given = given.iter().rev().map(|x| fs::read_to_string(here.join(x)).unwrap_or(x.into()));
-  let given: Vec<_> = given.filter_map(|x| build_target(&x)).collect();
-  let files = configs(here).filter_map(|x| fs::read_to_string(x).ok());
-  let files: Vec<_> = files.filter_map(|x| build_target(&x)).collect();
+  let given = given.iter().rev().flat_map(|x| match here.join(x) {
+    path if path.is_file() => included(&path, NESTED),
+    _ => vec![x.clone()],
+  });
+  let given: Vec<_> = given.filter_map(|x| value(&x, &["build", "target"])).collect();
+  let files: Vec<_> = configs(here).filter_map(|x| value(&x, &["build", "target"])).collect();
   let all = || given.iter().chain(&files);
   if all().any(|x| x.trim_start().starts_with('[')) {
     let env = env.into_iter().flat_map(|x| x.split_whitespace().map(String::from));
@@ -652,18 +653,37 @@ pub fn configured(args: &[OsString], env: Option<&str>, here: &Path) -> Vec<Stri
   }
 }
 
-/// cargo's config files, nearest first: `config.toml` and `config` in `.cargo` of `here`, of each
-/// folder above and of CARGO_HOME.
-fn configs(here: &Path) -> impl Iterator<Item = PathBuf> {
+/// How deep config files' `include`s nest at most, against a loop.
+const NESTED: u8 = 8;
+
+/// The texts of cargo's config files, by precedence: `config`, or else `config.toml`, in `.cargo`
+/// of `here`, of each folder above and of CARGO_HOME, each with those it includes.
+fn configs(here: &Path) -> impl Iterator<Item = String> {
   let home = env::var_os("CARGO_HOME").map(PathBuf::from);
   let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
   let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
-  dirs.flat_map(|x| [x.join("config.toml"), x.join("config")])
+  let file =
+    |x: PathBuf| [x.join("config"), x.join("config.toml")].into_iter().find(|x| x.is_file());
+  dirs.filter_map(file).flat_map(|x| included(&x, NESTED))
 }
 
-/// The value of `build.target` in a cargo config's `text` as TOML, when it sets it: in `[build]`,
-/// or as `build.target` before any table; a string or an array of them, which may span lines.
-fn build_target(text: &str) -> Option<String> {
+/// The text of config file `path`, then of the files it `include`s, `depth` deep, the last first:
+/// cargo merges each over those before it, and the file over them all.
+fn included(path: &Path, depth: u8) -> Vec<String> {
+  let Ok(text) = fs::read_to_string(path) else { return vec![] };
+  let names = value(&text, &["include"]).map(|x| strings(&x)).unwrap_or_default();
+  let dir = path.parent().unwrap_or(path);
+  let mut out = vec![text];
+  for name in names.iter().rev().filter(|_| depth > 0) {
+    out.extend(included(&dir.join(name), depth - 1));
+  }
+
+  out
+}
+
+/// The value of `key` in TOML `text`, unparsed, when it sets it: under its table, as a dotted key
+/// or in an inline table; a string or an array of them, which may span lines.
+fn value(text: &str, key: &[&str]) -> Option<String> {
   let (mut table, mut lines) = (String::new(), text.lines().map(code));
   while let Some(line) = lines.next() {
     let line = line.trim();
@@ -672,20 +692,29 @@ fn build_target(text: &str) -> Option<String> {
       continue;
     }
 
-    let Some((key, value)) = line.split_once('=') else { continue };
-    let key = format!("{table}.{key}");
-    let key = key.split('.').map(|x| x.trim().trim_matches('"')).filter(|x| !x.is_empty());
-    if !key.eq(["build", "target"]) {
+    let Some((name, found)) = line.split_once('=') else { continue };
+    let name = format!("{table}.{name}");
+    let name =
+      name.split('.').map(|x| x.trim().trim_matches(['"', '\''])).filter(|x| !x.is_empty());
+    let name: Vec<_> = name.collect();
+    // An inline table's pairs, as of `build = { target = "x", jobs = 1 }`, one a line.
+    let inline = found.trim().strip_prefix('{').and_then(|x| x.strip_suffix('}'));
+    let inline = inline.filter(|_| key.len() > name.len() && key.starts_with(&name));
+    if let Some(x) = inline.and_then(|x| value(&x.replace(',', "\n"), &key[name.len()..])) {
+      return Some(x);
+    }
+
+    if name != key {
       continue;
     }
 
-    let mut value = value.to_string();
-    while value.trim_start().starts_with('[') && !value.contains(']') {
+    let mut found = found.to_string();
+    while found.trim_start().starts_with('[') && !found.contains(']') {
       let Some(x) = lines.next() else { break };
-      value.push_str(x);
+      found.push_str(x);
     }
 
-    return Some(value);
+    return Some(found);
   }
 
   None
@@ -1051,11 +1080,20 @@ mod tests {
     fs::create_dir_all(dir.join("a/.cargo")).unwrap();
     fs::create_dir_all(here.join(".cargo")).unwrap();
     let got = |line, env| configured(&args(line), env, &here);
-    fs::write(&above, "[env]\ntarget = \"n\"\n[ build ] # b\n# target = \"n\"\ntarget = 'y'\n")
+    fs::write(&above, "[env]\ntarget = \"n\"\n['build'] # b\n# target = \"n\"\ntarget = 'y'\n")
       .unwrap();
     assert_eq!(got("build", None), ["y"]);
 
-    fs::write(here.join(".cargo/config"), "build.target = \"z\"\n[build]\njobs = 1\n").unwrap();
+    // cargo reads `config` over `config.toml`, a file over those it includes, the last of them
+    // over the others.
+    let config = |text| fs::write(here.join(".cargo/config"), text).unwrap();
+    fs::write(here.join(".cargo/config.toml"), "build.target = \"n\"\n").unwrap();
+    config("include = ['x.toml', { path = \"y.toml\" }]\n");
+    fs::write(here.join(".cargo/x.toml"), "build = { jobs = 1, target = \"x\" }\n").unwrap();
+    assert_eq!(got("build", None), ["x"]);
+    fs::write(here.join(".cargo/y.toml"), "build = { target = \"z\" }\n").unwrap();
+    assert_eq!(got("build", None), ["z"]);
+    config("include = ['x.toml', 'y.toml']\nbuild.target = \"z\"\n[build]\njobs = 1\n");
     assert_eq!(got("build", None), ["z"]);
     assert_eq!(got("build", Some("w")), ["w"]);
 
@@ -1067,12 +1105,10 @@ mod tests {
 
     // cargo joins the arrays and CARGO_BUILD_TARGET's names.
     fs::write(&above, "[build]\ntarget = [\n  \"x\", # x\n  'y',\n]\n").unwrap();
-    fs::write(here.join(".cargo/config"), "build.target = [\"z\"]\n").unwrap();
-    assert_eq!(got("build", None), ["z", "x", "y"]);
-    assert_eq!(
-      got(r#"build --config build.target=["t"]"#, Some("v w")),
-      ["t", "z", "x", "y", "v", "w"]
-    );
+    config("build = { target = [\"z\", \"v\"] }\n");
+    assert_eq!(got("build", None), ["z", "v", "x", "y"]);
+    let line = r#"build --config build.target=["t"]"#;
+    assert_eq!(got(line, Some("v w")), ["t", "z", "v", "x", "y", "v", "w"]);
     fs::remove_dir_all(&dir).unwrap();
   }
 
