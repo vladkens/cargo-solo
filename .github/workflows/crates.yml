@@ -3,13 +3,14 @@ name: crates
 # Popular crates with C and C++ inside (tests/crates), built by cargo-solo of the ref `solo` on
 # every host for every target, then run. A branch of its own, never merged.
 on:
-  push:
-    branches: [exp/crates]
   workflow_dispatch:
     inputs:
       solo:
         description: cargo-solo's ref
         default: main
+      target:
+        description: only this target, built on every host
+        default: ''
 
 permissions:
   contents: read
@@ -29,14 +30,7 @@ jobs:
       max-parallel: 3
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-          - x86_64-pc-windows-gnu
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+        target: ${{ fromJSON(inputs.target && format('["{0}"]', inputs.target) || '["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]') }}
         exclude:
           - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: macos-latest, target: x86_64-apple-darwin }
@@ -76,6 +70,7 @@ jobs:
 
   # the host's own target by cargo alone, for what fails without cargo-solo
   native:
+    if: ${{ !inputs.target }}
     strategy:
       fail-fast: false
       max-parallel: 1
