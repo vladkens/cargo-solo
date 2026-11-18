@@ -3,6 +3,7 @@
 
 mod args;
 mod config;
+mod host;
 mod packages;
 mod toolchain;
 mod unpack;
@@ -11,7 +12,8 @@ use std::process::{Command, ExitCode};
 use std::{env, io};
 
 use args::Cmd;
-use toolchain::{Host, Target};
+use host::Host;
+use toolchain::Target;
 
 fn main() -> ExitCode {
   match start() {
