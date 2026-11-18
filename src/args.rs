@@ -30,20 +30,20 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Cmd {
     _ => {}
   }
 
-  let targets = targets(&args);
+  let targets = values(&args, "--target");
   Cmd::Cargo { args, targets }
 }
 
-/// The values of `--target x` and `--target=x` in `args`, up to a `--`, after which the args are
-/// the program's.
-fn targets(args: &[OsString]) -> Vec<String> {
+/// The values of `flag x` and `flag=x` in `args`, up to a `--`, after which the args are the
+/// program's.
+pub fn values(args: &[OsString], flag: &str) -> Vec<String> {
   let mut out = vec![];
   let mut it = args.iter().map(|x| x.to_str());
   while let Some(arg) = it.next() {
     match arg {
       Some("--") => break,
-      Some("--target") => out.extend(it.next().flatten().map(String::from)),
-      Some(x) => out.extend(x.strip_prefix("--target=").map(String::from)),
+      Some(x) if x == flag => out.extend(it.next().flatten().map(String::from)),
+      Some(x) => out.extend(x.split_once('=').filter(|x| x.0 == flag).map(|x| x.1.into())),
       None => {}
     }
   }
@@ -66,8 +66,8 @@ Usage: cargo solo <cargo command> [args]...
   cargo solo build --release --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
   cargo solo clippy --target aarch64-unknown-linux-musl
 
-Each of these --targets gets its C compiler, linker and libc, and, but for macOS, its C++ compiler
-and cmake toolchain file; any other goes to cargo as is:
+Each of these targets, from --target or else cargo's build.target, gets its C compiler, linker and
+libc, and, but for macOS, its C++ compiler and cmake toolchain file; any other goes to cargo as is:
 {targets}
 Needs clang, and rustup to add a target or llvm-tools when missing; cmake for crates built with it,
 and on Windows ninja. Each target's libc comes from Debian's packages (Apple's SDK from Zig's

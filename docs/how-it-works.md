@@ -4,7 +4,7 @@ The details behind the readme: what cargo-solo sets for cargo, and where each fi
 
 ## What it sets
 
-For each `--target` it sets up, cargo-solo runs cargo with:
+For each target it sets up, from `--target`, or without one from cargo's `build.target` (in a `--config`, `CARGO_BUILD_TARGET` or a config file, merged as cargo does), cargo-solo runs cargo with:
 
 - `CC_<target>` and `CARGO_TARGET_<TARGET>_LINKER`: `<target>-clang`, a link to cargo-solo in its cache, which runs your clang with the target's `--target` and `--sysroot` (for macOS, `-isysroot`), and to link, rustup's rust-lld (`-fuse-ld=lld`, as `ld64.lld` for macOS);
 - `AR_<target>`: rustup's llvm-ar, and `RANLIB_<target>`, it as ranlib from the folder below: OpenSSL's build otherwise runs the host's `ranlib`;

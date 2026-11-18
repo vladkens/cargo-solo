@@ -47,7 +47,7 @@ cargo solo clippy --target aarch64-unknown-linux-musl
 cargo solo build --target aarch64-apple-darwin --target x86_64-unknown-linux-musl
 ```
 
-A target cargo-solo doesn't set up goes to cargo as is, such as `aarch64-apple-darwin` on a Mac.
+Without `--target`, it sets up the targets of `build.target` in cargo's config, which cargo builds for then. A target cargo-solo doesn't set up goes to cargo as is, such as `aarch64-apple-darwin` on a Mac.
 
 ## 🎯 Targets
 
