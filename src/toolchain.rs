@@ -1,16 +1,15 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-//! Each target's toolchain: the targets cargo-solo sets up, the host's clang and rustup's lld and
-//! llvm-ar they share, the environment cargo runs with, its cmake toolchain file, and the wrapper:
-//! this program run as a target's C and C++ compiler and linker, which adds the target's flags to
-//! clang's.
+//! Each target's toolchain: its clang flags, the environment cargo runs with, its cmake toolchain
+//! file, and the wrapper, this program run as the target's C and C++ compiler and linker.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs, io};
 
+use crate::config::chosen;
 use crate::packages::{self, Cxx, Libc, Package};
-use crate::{args, bad, run};
+use crate::{bad, run};
 
 /// The wrapper's clang, set by cargo-solo.
 const CLANG: &str = "CARGO_SOLO_CLANG";
@@ -31,7 +30,6 @@ const DEPLOYMENT_TARGET: &str = "MACOSX_DEPLOYMENT_TARGET";
 
 // MARK: Targets
 
-/// A target cargo-solo sets up.
 #[derive(Debug)]
 pub struct Target {
   pub rust: &'static str,
@@ -125,7 +123,6 @@ impl Target {
     }
   }
 
-  /// The name of the folder with this target's libstdc++, in the cache.
   pub fn libstdcxx(&self) -> String {
     format!("{}-libstdc++", self.clang)
   }
@@ -139,10 +136,9 @@ impl Target {
     [format!("{base}_{}", self.rust), format!("{base}_{under}"), format!("{kind}_{base}")]
   }
 
-  /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
-  /// linker, which rustc takes for a C compiler driving the link by its name, `*-clang`; llvm-ar at
-  /// `ar` its archiver, and as `<target>-ranlib` in `tools` its ranlib, which OpenSSL's build
-  /// otherwise runs as plain `ranlib`, the host's.
+  /// For cargo: the wrapper `cc` as C compiler and linker, which rustc takes for clang by its name;
+  /// llvm-ar `ar` as archiver, and `<target>-ranlib` in `tools` as ranlib: OpenSSL's build would
+  /// run the host's `ranlib`.
   pub fn env(&self, cc: &Path, ar: &Path, tools: &Path) -> [(String, OsString); 4] {
     let upper = self.rust.to_uppercase().replace('-', "_");
     let ranlib = tools.join(exe(&format!("{}-ranlib", self.rust)));
@@ -226,10 +222,9 @@ impl Target {
     out
   }
 
-  /// The flags the wrapper adds for C++ after [flags](Target::flags), libstdc++'s folder at `dir`:
-  /// as `<target>-clang++` (`cxx`), clang as g++ with libstdc++'s headers, and to link, the folder
-  /// and what GCC's g++ links for the target. As `<target>-clang`, the folder only, for a link that
-  /// names `-lstdc++`, as rustc's of a crate's C++ through cc does.
+  /// The wrapper's C++ flags after [flags](Target::flags), libstdc++ at `dir`: as clang++ (`cxx`),
+  /// g++'s driver, headers and what g++ links; as clang, only the folder, for rustc's link of a
+  /// crate's C++, which names `-lstdc++`.
   pub fn cxx_flags(&self, dir: &Path, cxx: bool, args: &[OsString]) -> Vec<OsString> {
     let Some(lib) = self.cxx else {
       return vec![];
@@ -274,10 +269,9 @@ impl Target {
     out
   }
 
-  /// The cmake toolchain file for this target, its sysroot at `dir`: the system, the `tools` by
-  /// cmake's names (`C_COMPILER`, `AR`), the C++ compiler cc takes, and as where to find
-  /// libraries, headers and packages, never programs, the sysroot (for Apple, the SDK in SDKROOT)
-  /// and cargo's build folder. Paths with `/`, as cmake reads them on Windows too.
+  /// The cmake toolchain file, sysroot at `dir`: the system, the `tools` by cmake's names, cc's C++
+  /// compiler, and the sysroot (Apple's: SDKROOT) and cargo's build folder to find all but programs
+  /// in. Paths with `/`, which cmake takes on Windows too.
   pub fn cmake(&self, dir: &Path, tools: &[(&str, &Path)], host: &str) -> String {
     let path = |x: &Path| x.to_string_lossy().replace('\\', "/");
     let arch = |x: &'static str| x.split('-').next().unwrap_or_default();
@@ -318,10 +312,9 @@ impl Target {
   }
 }
 
-/// The toolchain file's C++ compiler, cc's: the first of cc's variables (NAMES) set, the user's or
-/// cargo-solo's wrapper, read as cc reads it: a path, or else words, the compiler and its flags,
-/// after a wrapper cc knows, such as sccache, which runs it. cmake-rs passes no compiler with a
-/// toolchain file, nor those flags.
+/// The toolchain file's C++ compiler, as cc reads the first of its variables (NAMES) set: a path,
+/// or words, the compiler and its flags, after a wrapper such as sccache. cmake-rs passes no
+/// compiler with a toolchain file.
 const CMAKE_CXX: &str = r#"foreach(x NAMES)
   if(DEFINED ENV{${x}})
     file(TO_CMAKE_PATH "$ENV{${x}}" CMAKE_CXX_COMPILER)
@@ -366,7 +359,6 @@ const CMAKE_BUILD: &str = r#"if(DEFINED ENV{OUT_DIR})
 endif()
 "#;
 
-/// Whether clang only compiles with `args`, links nothing.
 fn compiles(args: &[OsString]) -> bool {
   args.iter().any(|x| ["-c", "-E", "-S", "-M", "-MM"].iter().any(|f| x == f))
 }
@@ -446,12 +438,9 @@ impl Host {
     ]
   }
 
-  /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, its
-  /// [C++ and cmake](Host::cxx), its sysroot for [pkg-config](Target::pkg_config) and
-  /// [bindgen](Target::bindgen), for Windows aws-lc-sys's NASM objects, for Apple the
-  /// [SDK and the oldest macOS](Host::darwin), each but the tools unless the user chose it in
-  /// cargo's `args`, config or environment.
+  /// Sets `target` up (its std, sysroot and wrapper) and gives cargo's environment for it: its
+  /// [tools] first in PATH, [C++ and cmake](Host::cxx), pkg-config, bindgen, aws-lc's NASM objects
+  /// for Windows, [Apple's](Host::darwin); each but the tools unless the user chose it.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     // First, as it checks the tools before any download.
     let darwin = match target.libc {
@@ -546,11 +535,9 @@ impl Host {
     Ok(out)
   }
 
-  /// The environment for `target`'s C++ and cmake, with its `sysroot`, wrappers and the folder of
-  /// its [tools](tools): `CXX_<t>` the wrapper as clang++, but for Apple, which has no C++
-  /// library, `CMAKE_TOOLCHAIN_FILE_<t>` the target's toolchain file, and on a Windows
-  /// host with ninja on PATH, Ninja for cmake's generator, where cmake-rs would take Visual Studio
-  /// or MinGW's make; each unless the user chose.
+  /// The environment for `target`'s C++ and cmake: `CXX_<t>` the wrapper as clang++ (not for Apple,
+  /// with no C++ library), `CMAKE_TOOLCHAIN_FILE_<t>`, and on Windows with ninja, Ninja over Visual
+  /// Studio or MinGW's make; each unless the user chose.
   fn cxx(
     &self,
     target: &Target,
@@ -611,155 +598,9 @@ impl Host {
   }
 }
 
-/// Whether the user set one of `vars` for cargo: in its environment or `args`, or outside comments
-/// in a config file it reads: a `.toml` that `args` name, and those of `configs`. By the name
-/// alone, which is all a choice needs.
-fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
-  let name = |x: char| x.is_alphanumeric() || x == '_' || x == '-';
-  let named = |x: &str| x.split(|x| !name(x)).any(|x| vars.contains(&x));
-  let args: Vec<_> = args.iter().map(|x| x.to_string_lossy()).collect();
-  if vars.iter().any(|x| env::var_os(x).is_some()) || args.iter().any(|x| named(x)) {
-    return true;
-  }
-
-  let given = args.iter().map(|x| here.join(x.strip_prefix("--config=").unwrap_or(x)));
-  let given = given.filter(|x| x.extension().is_some_and(|x| x == "toml"));
-  let mut texts = given.flat_map(|x| included(&x, NESTED)).chain(configs(here));
-  texts.any(|x| x.lines().any(|x| named(code(x))))
-}
-
-/// The targets cargo builds for when `args` have no `--target`, those of `build.target`, merged
-/// as cargo does: the arrays of every `--config` in `args` (a file or a `KEY=VALUE`) and config
-/// file, with CARGO_BUILD_TARGET's value `env` split by spaces; else the first string, the last
-/// `--config`'s, `env` or the nearest file's.
-pub fn configured(args: &[OsString], env: Option<&str>, here: &Path) -> Vec<String> {
-  let given = args::values(args, "--config");
-  let given = given.iter().rev().flat_map(|x| match here.join(x) {
-    path if path.is_file() => included(&path, NESTED),
-    _ => vec![x.clone()],
-  });
-  let given: Vec<_> = given.filter_map(|x| value(&x, &["build", "target"])).collect();
-  let files: Vec<_> = configs(here).filter_map(|x| value(&x, &["build", "target"])).collect();
-  let all = || given.iter().chain(&files);
-  if all().any(|x| x.trim_start().starts_with('[')) {
-    let env = env.into_iter().flat_map(|x| x.split_whitespace().map(String::from));
-    return all().flat_map(|x| strings(x)).chain(env).collect();
-  }
-
-  match (given.first(), env, files.first()) {
-    (Some(x), ..) | (None, None, Some(x)) => strings(x),
-    (None, Some(x), _) => vec![x.into()],
-    _ => vec![],
-  }
-}
-
-/// How deep config files' `include`s nest at most, against a loop.
-const NESTED: u8 = 8;
-
-/// The texts of cargo's config files, by precedence: `config`, or else `config.toml`, in `.cargo`
-/// of `here`, of each folder above and of CARGO_HOME, each with those it includes.
-fn configs(here: &Path) -> impl Iterator<Item = String> {
-  let home = env::var_os("CARGO_HOME").map(PathBuf::from);
-  let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
-  let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
-  let file =
-    |x: PathBuf| [x.join("config"), x.join("config.toml")].into_iter().find(|x| x.is_file());
-  dirs.filter_map(file).flat_map(|x| included(&x, NESTED))
-}
-
-/// The text of config file `path`, then of the files it `include`s, `depth` deep, the last first:
-/// cargo merges each over those before it, and the file over them all.
-fn included(path: &Path, depth: u8) -> Vec<String> {
-  let Ok(text) = fs::read_to_string(path) else { return vec![] };
-  let names = value(&text, &["include"]).map(|x| strings(&x)).unwrap_or_default();
-  let dir = path.parent().unwrap_or(path);
-  let mut out = vec![text];
-  for name in names.iter().rev().filter(|_| depth > 0) {
-    out.extend(included(&dir.join(name), depth - 1));
-  }
-
-  out
-}
-
-/// The value of `key` in TOML `text`, unparsed, when it sets it: under its table, as a dotted key
-/// or in an inline table; a string or an array of them, which may span lines.
-fn value(text: &str, key: &[&str]) -> Option<String> {
-  let (mut table, mut lines) = (String::new(), text.lines().map(code));
-  while let Some(line) = lines.next() {
-    let line = line.trim();
-    if let Some(x) = line.strip_prefix('[') {
-      table = x.trim_end_matches(']').to_string();
-      continue;
-    }
-
-    let Some((name, found)) = line.split_once('=') else { continue };
-    let name = format!("{table}.{name}");
-    let name =
-      name.split('.').map(|x| x.trim().trim_matches(['"', '\''])).filter(|x| !x.is_empty());
-    let name: Vec<_> = name.collect();
-    // An inline table's pairs, as of `build = { target = "x", jobs = 1 }`, one a line.
-    let inline = found.trim().strip_prefix('{').and_then(|x| x.strip_suffix('}'));
-    let inline = inline.filter(|_| key.len() > name.len() && key.starts_with(&name));
-    if let Some(x) = inline.and_then(|x| value(&x.replace(',', "\n"), &key[name.len()..])) {
-      return Some(x);
-    }
-
-    if name != key {
-      continue;
-    }
-
-    let mut found = found.to_string();
-    while found.trim_start().starts_with('[') && !found.contains(']') {
-      let Some(x) = lines.next() else { break };
-      found.push_str(x);
-    }
-
-    return Some(found);
-  }
-
-  None
-}
-
-/// The strings in TOML `value`, quoted with `"` or `'`; in `"`, `\\` and `\"` taken as escapes,
-/// as in a Windows path.
-fn strings(value: &str) -> Vec<String> {
-  let (mut out, mut chars) = (vec![], value.chars());
-  while let Some(quote) = chars.find(|x| matches!(x, '"' | '\'')) {
-    let mut x = String::new();
-    while let Some(c) = chars.next() {
-      match c {
-        _ if c == quote => break,
-        '\\' if quote == '"' => x.extend(chars.next()),
-        _ => x.push(c),
-      }
-    }
-
-    out.push(x);
-  }
-
-  out
-}
-
 /// The major version in `clang --version`'s `text`.
 fn major(text: &str) -> Option<u32> {
   text.split("clang version ").nth(1)?.split('.').next()?.parse().ok()
-}
-
-/// A TOML `line` without its comment, from the first `#` outside quotes.
-fn code(line: &str) -> &str {
-  let (mut quote, mut escaped) = (None, false);
-  for (i, c) in line.char_indices() {
-    match (quote, c) {
-      _ if escaped => escaped = false,
-      (Some('"'), '\\') => escaped = true,
-      (None, '#') => return &line[..i],
-      (None, '"' | '\'') => quote = Some(c),
-      (Some(q), _) if c == q => quote = None,
-      _ => {}
-    }
-  }
-
-  line
 }
 
 /// clang from PATH, or on Windows from LLVM's folder, which its installer doesn't add to PATH
@@ -805,10 +646,9 @@ fn rustup(sysroot: &Path, args: &[&str]) -> io::Result<()> {
 
 // MARK: Wrapper
 
-/// The wrappers for `target`, `<target>-clang` and `<target>-clang++`: links to this program in a
-/// folder of `bin` that its path and the target's `dirs`, its sysroot's and libstdc++'s, name. So a
-/// build never runs another cargo-solo, with other tables, and when either changes, cargo and cc-rs
-/// see another `CC_<t>`, `CXX_<t>` and linker, and build anew.
+/// `<target>-clang` and `-clang++`, links to this program in a folder of `bin` named by its path
+/// and the target's `dirs`: a build never runs another cargo-solo, and when either changes, cargo
+/// and cc-rs see another compiler and build anew.
 fn wrapper(bin: &Path, target: &Target, dirs: [&Path; 2]) -> io::Result<[PathBuf; 2]> {
   let me = env::current_exe()?.canonicalize()?;
   let mut key = me.as_os_str().to_owned();
@@ -825,14 +665,9 @@ fn wrapper(bin: &Path, target: &Target, dirs: [&Path; 2]) -> io::Result<[PathBuf
   Ok(out)
 }
 
-/// The folder for PATH with the binutils of `target` by the names a configure script looks for
-/// with `--host`: `<triple>-ar`, `-ranlib` and `-nm`, by Rust's triple and Debian's, for the host's
-/// own, such as macOS's ar, can't read the target's objects. They are links to rustup's tools in
-/// `llvm`: llvm-ar, which runs as ranlib by that name, and llvm-nm. For Windows, also rustc's
-/// dlltool, which makes import libraries for the DLLs that `raw-dylib` links name, as
-/// windows-sys's do: llvm-ar as `dlltool.exe` on Windows, `<target>-dlltool` elsewhere. For Apple,
-/// llvm-objcopy as `<target>-install_name_tool`, which it runs as by that name, for cmake, which
-/// stops without one.
+/// A folder for PATH with rustup's tools in `llvm` by the names a configure script's `--host` looks
+/// for, as the host's can't read the target's objects; for Windows rustc's dlltool, for
+/// `raw-dylib`; for Apple `install_name_tool`, without which cmake stops.
 fn tools(bin: &Path, target: &Target, llvm: &Path) -> io::Result<PathBuf> {
   let (ar, nm) = (llvm.join(exe("llvm-ar")), llvm.join(exe("llvm-nm")));
   let objcopy = llvm.join(exe("llvm-objcopy"));
@@ -1052,74 +887,6 @@ mod tests {
     let apple = tools(&dir, apple, &llvm).unwrap();
     assert!(runs(&apple.join(exe("aarch64-apple-darwin-install_name_tool")), &objcopy));
     fs::remove_dir_all(&dir).unwrap();
-  }
-
-  #[test]
-  fn chosen_finds_the_vars_in_args_and_cargo_s_config() {
-    let dir = env::temp_dir().join(format!("cargo-solo-chosen-{}", std::process::id()));
-    let (here, config) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
-    fs::create_dir_all(dir.join("a/.cargo")).unwrap();
-    fs::create_dir_all(&here).unwrap();
-    let vars = ["CARGO_SOLO_TEST_CHOSEN", "CARGO_SOLO_TEST_CHOSEN_x", "CARGO_SOLO_TEST_CHOSEN_x-y"];
-    let chosen = |line| chosen(&vars, &args(line), &here);
-    assert!(!chosen("build"));
-    assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"));
-    assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_y=0"));
-    assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x-y=0"));
-    assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x-z=0"));
-
-    let comments = "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\nA = 1 # CARGO_SOLO_TEST_CHOSEN\n";
-    fs::write(&config, comments).unwrap();
-    assert!(!chosen("build"));
-
-    fs::write(here.join("my.toml"), "[env]\nCARGO_SOLO_TEST_CHOSEN_x = \"0\"\n").unwrap();
-    assert!(chosen("build --config my.toml"));
-    assert!(chosen("build --config=my.toml"));
-
-    fs::write(&config, r##"env = { A = "\"#", B = '#', CARGO_SOLO_TEST_CHOSEN = "0" }"##).unwrap();
-    assert!(chosen("build"));
-    fs::remove_dir_all(&dir).unwrap();
-  }
-
-  #[test]
-  fn configured_reads_build_target_as_cargo_does() {
-    let dir = env::temp_dir().join(format!("cargo-solo-configured-{}", std::process::id()));
-    let (here, above) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
-    fs::create_dir_all(dir.join("a/.cargo")).unwrap();
-    fs::create_dir_all(here.join(".cargo")).unwrap();
-    let got = |line, env| configured(&args(line), env, &here);
-    fs::write(&above, "[env]\ntarget = \"n\"\n['build'] # b\n# target = \"n\"\ntarget = 'y'\n")
-      .unwrap();
-    assert_eq!(got("build", None), ["y"]);
-
-    // cargo reads `config` over `config.toml`, a file over those it includes, the last of them
-    // over the others.
-    let config = |text| fs::write(here.join(".cargo/config"), text).unwrap();
-    fs::write(here.join(".cargo/config.toml"), "build.target = \"n\"\n").unwrap();
-    config("include = ['x.toml', { path = \"y.toml\" }]\n");
-    fs::write(here.join(".cargo/x.toml"), "build = { jobs = 1, target = \"x\" }\n").unwrap();
-    assert_eq!(got("build", None), ["x"]);
-    fs::write(here.join(".cargo/y.toml"), "build = { target = \"z\" }\n").unwrap();
-    assert_eq!(got("build", None), ["z"]);
-    config("include = ['x.toml', 'y.toml']\nbuild.target = \"z\"\n[build]\njobs = 1\n");
-    assert_eq!(got("build", None), ["z"]);
-    assert_eq!(got("build", Some("w")), ["w"]);
-
-    fs::write(here.join("my.toml"), "[build]\ntarget = \"u\"\n").unwrap();
-    assert_eq!(got("build --config my.toml", Some("w")), ["u"]);
-    assert_eq!(got(r#"build --config=build.target="t" --config my.toml"#, None), ["u"]);
-    assert_eq!(got(r#"build --config my.toml --config build.target="t""#, None), ["t"]);
-    assert_eq!(got(r#"run -- --config build.target="t""#, None), ["z"]);
-
-    // cargo joins the arrays and CARGO_BUILD_TARGET's names.
-    fs::write(&above, "[build]\ntarget = [\n  \"x\", # x\n  'y',\n]\n").unwrap();
-    config("build = { target = [\"z\", \"v\"] }\n");
-    assert_eq!(got("build", None), ["z", "v", "x", "y"]);
-    let line = r#"build --config build.target=["t"]"#;
-    assert_eq!(got(line, Some("v w")), ["t", "z", "v", "x", "y", "v", "w"]);
-    fs::remove_dir_all(&dir).unwrap();
-
-    assert_eq!(strings(r#"["a\\b", 'c\d', "e\"f"]"#), [r"a\b", r"c\d", "e\"f"]);
   }
 
   #[test]
