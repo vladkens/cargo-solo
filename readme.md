@@ -106,14 +106,13 @@ The usual ways to cross-compile, and what each costs:
 | Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
 | C++, cmake | ❌ not yet | ✅ | ✅ |
 
-The first build of a crate with `ring` on Linux arm64: what each tool fetches, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
+The first build of a crate with `ring` on GitHub's `ubuntu-latest` (x86_64, 4 CPUs): what each tool fetches or builds, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
 
 | First build | cargo-solo | cargo-zigbuild | cross |
 |---|---|---|---|
-| Once per machine | llvm-tools, 34 MB | Zig, 53 MB | Docker |
-| Unpacked | 165 MB | 401 MB | in Docker's VM |
-| Web server | 14 MB, +6 s | +75 s building libc | 1.2 GB of images |
-| CLI | 24 MB, +10 s | +140 s building libc | 2.3 GB of images |
+| Once per machine | llvm-tools, 41 MB | Zig, 57 MB, 412 MB unpacked | Docker |
+| Web server | 14 MB, 57 MB unpacked, +4 s | 69 MB of libc built, +29 s | 4.7 GB of images, +53 s |
+| CLI | 24 MB, 234 MB unpacked, +4 s | 105 MB of libc built, +78 s | 9.4 GB of images, +86 s |
 
 Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ and cmake until cargo-solo has them, a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
