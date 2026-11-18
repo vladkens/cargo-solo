@@ -435,6 +435,7 @@ mod tests {
     assert_eq!(got("/cache/bin/x86_64-unknown-linux-gnu-clang"), Some((gnu, false)));
     assert_eq!(got("x86_64-unknown-linux-gnu-clang"), Some((gnu, false)));
     assert_eq!(got("/cache/bin/x86_64-unknown-linux-gnu-clang++"), Some((gnu, true)));
+
     let mingw = Some(("x86_64-pc-windows-gnu", true));
     assert_eq!(got("C:/cache/bin/x86_64-pc-windows-gnu-clang++.exe"), mingw);
     assert_eq!(got("/usr/bin/clang"), None);
@@ -520,10 +521,12 @@ mod tests {
     let bindgen = |name| target(name).bindgen(dir).into_string().unwrap().replace('\\', "/");
     let gnu = "'--target=x86_64-linux-gnu' '--sysroot=/c/sr'";
     assert_eq!(bindgen("x86_64-unknown-linux-gnu"), gnu);
+
     let include = "'-idirafter' '/c/sr/usr/include/aarch64-linux-musl'";
     let asm = "'-idirafter' '/c/sr/usr/include/aarch64-linux-gnu'";
     let musl = format!("'--target=aarch64-linux-musl' '--sysroot=/c/sr' {include} {asm}");
     assert_eq!(bindgen("aarch64-unknown-linux-musl"), musl);
+
     let mingw = "'--target=x86_64-w64-mingw32' '--sysroot=/c/sr/usr'";
     assert_eq!(bindgen("x86_64-pc-windows-gnu"), mingw);
     assert_eq!(bindgen("aarch64-apple-darwin"), "'--target=arm64-apple-macos'");
