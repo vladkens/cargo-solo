@@ -190,8 +190,7 @@ impl Target {
     }
 
     // An unused -fuse-ld when only compiling is a warning, an error under -Werror.
-    let compiles = args.iter().any(|x| ["-c", "-E", "-S", "-M", "-MM"].iter().any(|f| x == f));
-    if compiles {
+    if compiles(args) {
       return out;
     }
 

@@ -74,9 +74,19 @@ impl Host {
   /// [tools] first in PATH, [C++ and cmake](Host::cxx), pkg-config, bindgen, aws-lc's NASM objects
   /// for Windows, [Apple's](Host::darwin); each but the tools unless the user chose it.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
+    let here = env::current_dir()?;
+    let set = |vars: &[&str]| chosen(vars, args, &here);
+    // The target's first name for `base`, unless the user set one of them, or `base` when `plain`.
+    let free = |base: &str, plain: bool| {
+      let names = target.names(base, &self.triple);
+      let mut vars: Vec<_> = names.iter().map(String::as_str).collect();
+      vars.extend(plain.then_some(base));
+      (!set(&vars)).then(|| names[0].clone())
+    };
+
     // First, as it checks the tools before any download.
     let darwin = match target.libc {
-      Libc::Darwin => self.darwin(target, args)?,
+      Libc::Darwin => self.darwin(target, set)?,
       _ => vec![],
     };
 
@@ -93,22 +103,15 @@ impl Host {
     let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
     let mut out = target.env(&cc, &ar, &dir).to_vec();
     out.extend(darwin);
-    out.extend(self.cxx(target, &sysroot, [&cc, &cxx], &dir, args)?);
+    out.extend(self.cxx(target, &sysroot, [&cc, &cxx], &dir, free)?);
 
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
-    let here = env::current_dir()?;
-    // pkg-config's names, as bindgen's but for `TARGET_<base>`, `HOST_<base>` for the host's own.
-    let kind = if target.rust == self.triple { "HOST" } else { "TARGET" };
     let vars =
       [("PKG_CONFIG_LIBDIR", target.pkg_config(&sysroot)?), (BINDGEN, target.bindgen(&sysroot))];
     for (base, value) in vars {
-      let name = format!("{base}_{}", target.rust);
-      let under = format!("{base}_{}", target.rust.replace('-', "_"));
-      if !chosen(&[base, &name, &under, &format!("{kind}_{base}")], args, &here) {
-        out.push((name, value));
-      }
+      out.extend(free(base, true).map(|x| (x, value)));
     }
 
     if target.libc != Libc::Mingw {
@@ -116,7 +119,7 @@ impl Host {
     }
 
     let nasm = format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_"));
-    if !chosen(&[PREBUILT_NASM, &nasm], args, &here) {
+    if !set(&[PREBUILT_NASM, &nasm]) {
       out.push((nasm, "1".into()));
     }
 
@@ -126,7 +129,11 @@ impl Host {
   /// For Apple's `target`: [SDKROOT], its sysroot, and [DEPLOYMENT_TARGET], the oldest of rustc's
   /// for Apple, each unless the user chose it. Neither has a name per target, so one value serves
   /// both: rustc and clang raise x86_64's 10.12 to arm64's minimum, 11.0.
-  fn darwin(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
+  fn darwin(
+    &self,
+    target: &Target,
+    set: impl Fn(&[&str]) -> bool,
+  ) -> io::Result<Vec<(String, OsString)>> {
     let gcc_ld = self.bin.join("gcc-ld");
     if !gcc_ld.join(exe("ld64.lld")).is_file() {
       return Err(bad(format!("no ld64.lld in {}", gcc_ld.display())));
@@ -141,14 +148,13 @@ impl Host {
       return Err(bad(format!("Apple's targets need clang 18 or newer, not {line}")));
     }
 
-    let here = env::current_dir()?;
     let mut out = vec![];
-    if !chosen(&[SDKROOT], args, &here) {
+    if !set(&[SDKROOT]) {
       let sdk = packages::dir(&self.cache, target.sysroot(), target.packages);
       out.push((SDKROOT.into(), sdk.into()));
     }
 
-    if chosen(&[DEPLOYMENT_TARGET], args, &here) {
+    if set(&[DEPLOYMENT_TARGET]) {
       return Ok(out);
     }
 
@@ -176,18 +182,10 @@ impl Host {
     sysroot: &Path,
     [cc, cxx]: [&Path; 2],
     tools: &Path,
-    args: &[OsString],
+    free: impl Fn(&str, bool) -> Option<String>,
   ) -> io::Result<Vec<(String, OsString)>> {
-    let here = env::current_dir()?;
-    // cc reads `CXX` for the host too, cmake-rs its own for every target.
-    let free = |base: &str, plain: bool| {
-      let names = target.names(base, &self.triple);
-      let mut vars: Vec<_> = names.iter().map(String::as_str).collect();
-      vars.extend(plain.then_some(base));
-      (!chosen(&vars, args, &here)).then(|| names[0].clone())
-    };
-
     let mut out = vec![];
+    // Not plain `CXX`: cc reads it for the host too.
     if target.cxx.is_some()
       && let Some(name) = free("CXX", false)
     {
@@ -327,41 +325,35 @@ fn folder(bin: &Path, key: &OsStr) -> PathBuf {
 
 /// Makes `path` a link to the program `to`, anew when it is another's.
 fn place(to: &Path, path: &Path) -> io::Result<()> {
-  let dir = path.parent().unwrap_or(Path::new("."));
-  fs::create_dir_all(dir)?;
-  if runs(path, to) {
-    return Ok(());
-  }
-
-  // Made beside it and renamed over it, so that a build running with the old one never misses it.
-  let name = path.file_stem().unwrap_or_default().to_string_lossy();
-  let part = dir.join(format!(".{name}-{}", std::process::id()));
-  let _ = fs::remove_file(&part);
-  link(to, &part)?;
-  let done = fs::rename(&part, path);
-  let _ = fs::remove_file(&part);
-  match done {
-    // Windows renames nothing over a program that runs: another run's link, if it is this one.
-    Err(_) if runs(path, to) => Ok(()),
-    Err(e) => Err(e),
-    Ok(()) => Ok(()),
-  }
+  swap(path, |x| link(to, x), || runs(path, to))
 }
 
 /// Writes `text` to `path` when it's not there, as [place] puts a link.
 fn put(path: &Path, text: &str) -> io::Result<()> {
-  if fs::read_to_string(path).is_ok_and(|x| x == text) {
+  swap(path, |x| fs::write(x, text), || fs::read_to_string(path).is_ok_and(|x| x == text))
+}
+
+/// Puts what `make` makes at `path`, unless it's `there`: made beside it and renamed over it, so
+/// that a build running with the old one never misses it.
+fn swap(
+  path: &Path,
+  make: impl FnOnce(&Path) -> io::Result<()>,
+  there: impl Fn() -> bool,
+) -> io::Result<()> {
+  let dir = path.parent().unwrap_or(Path::new("."));
+  fs::create_dir_all(dir)?;
+  if there() {
     return Ok(());
   }
 
-  let dir = path.parent().unwrap_or(Path::new("."));
-  fs::create_dir_all(dir)?;
   let name = path.file_name().unwrap_or_default().to_string_lossy();
   let part = dir.join(format!(".{name}-{}", std::process::id()));
-  let done = fs::write(&part, text).and_then(|()| fs::rename(&part, path));
+  let _ = fs::remove_file(&part);
+  let done = make(&part).and_then(|()| fs::rename(&part, path));
   let _ = fs::remove_file(&part);
   match done {
-    Err(_) if fs::read_to_string(path).is_ok_and(|x| x == text) => Ok(()),
+    // Windows renames nothing over a program that runs: another run's, if it is the same.
+    Err(_) if there() => Ok(()),
     x => x,
   }
 }
