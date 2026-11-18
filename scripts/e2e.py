@@ -16,10 +16,13 @@ loads only the system's dylibs and runs on rustc's oldest macOS. `run` takes any
 found anywhere under <dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other
 arch through QEMU), Windows ones on Windows, Apple ones on a Mac (x86_64 through Rosetta). CI builds
 on each OS and runs on each (.github/workflows/main.yml).
+
+With E2E_FULL=true, as CI on main and release PRs: release builds, and tests/hello with aws-lc-rs.
 """
 
 import argparse
 import hashlib
+import os
 import platform
 import re
 import shutil
@@ -32,17 +35,20 @@ EXE = ".exe" if sys.platform == "win32" else ""
 GLIBC = (2, 28)
 # What a Windows binary may import: the system's DLLs, never MinGW's runtime (libgcc_s, winpthread).
 SYSTEM_DLL = re.compile(
-    r"(?i)^(kernel32|msvcrt|ntdll|userenv|ws2_32|bcryptprimitives|api-ms-win-.+)\.dll$"
+    r"(?i)^(kernel32|msvcrt|ntdll|userenv|ws2_32|advapi32|bcrypt|bcryptprimitives"
+    r"|api-ms-win-.+)\.dll$"
 )
 # The oldest macOS rustc builds for, which Apple's binaries must not raise.
 MACOS = {"aarch64": (11, 0), "x86_64": (10, 12)}
 SHA = hashlib.sha256(b"cargo-solo").hexdigest()[:16]
-# Each test crate's folder in tests/: its binary and the line it prints.
+FULL = os.environ.get("E2E_FULL") == "true"
+PROFILE = "release" if FULL else "debug"
+# Each test crate's folder in tests/: its binary, the line it prints and its cargo args.
 CRATES = {
-    "hello": ("hello", f"hello 10 {SHA} {SHA}"),  # ring's and aws-lc's
-    "cxx": ("hello-cxx", "hello-cxx caught 10 0.50 48"),
+    "hello": ("hello", f"hello 10 {SHA}" + f" {SHA}" * FULL, ["--features", "aws-lc-rs"] * FULL),
+    "cxx": ("hello-cxx", "hello-cxx caught 10 0.50 48", []),
 }
-EXPECTED = dict(CRATES.values())
+EXPECTED = {name: line for name, line, _ in CRATES.values()}
 
 
 def log(msg: str) -> None:
@@ -54,6 +60,20 @@ def run(*args, **kw) -> str:
     args = [str(a) for a in args]
     log(" ".join(args))
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True, **kw).stdout
+
+
+def start(*args, **kw) -> subprocess.Popen:
+    """Starts a command beside this script's, its output passing through."""
+    args = [str(a) for a in args]
+    log(" ".join(args))
+    return subprocess.Popen(args, **kw)
+
+
+def wait(*procs: subprocess.Popen) -> None:
+    """Waits for each of `procs`; fails when one did."""
+    for proc in procs:
+        if proc.wait():
+            sys.exit(f"e2e: {' '.join(proc.args)} failed ({proc.returncode})")
 
 
 # MARK: Build
@@ -104,26 +124,38 @@ def check(target: str, path: Path, tool: Path) -> None:
 
 
 def build(out: Path) -> None:
-    """Each test crate for every target in one `cargo solo build`, copied to <out>/<target>/."""
-    run("cargo", "build", "--release", cwd=ROOT)
-    solo = ROOT / "target" / "release" / f"cargo-solo{EXE}"
+    """Each test crate for every target, built side by side, copied to <out>/<target>/."""
+    # rustup's downloads beside cargo's, rather than one by one in the first build
+    tools = start("rustup", "component", "add", "llvm-tools")
+    run("cargo", "build", cwd=ROOT)
+    solo = ROOT / "target" / "debug" / f"cargo-solo{EXE}"
     text = run(solo, "--help")
     targets = re.findall(r"^  ([a-z0-9_]+-[a-z0-9_-]+) {2,}", text, re.M)
     if not targets:
         sys.exit("e2e: no targets in `cargo solo --help`")
 
-    tool = readobj()
-    for crate, (name, _) in CRATES.items():
+    fetch = [start("cargo", "fetch", cwd=ROOT / "tests" / x) for x in CRATES]
+    wait(tools)
+    run("rustup", "target", "add", *targets)
+    wait(*fetch)
+
+    builds = []
+    for crate, (name, _, extra) in CRATES.items():
         ours = [t for t in targets if crate != "cxx" or "-apple-" not in t]
         args = [x for t in ours for x in ("--target", t)]
         dest = ROOT / "target" / crate
         # --keep-going: every target that fails, not only the first
-        cmd = [solo, "solo", "build", "--release", "--keep-going", "--target-dir", dest, *args]
-        run(*cmd, cwd=ROOT / "tests" / crate)
+        cmd = [solo, "solo", "build", "--keep-going", "--target-dir", dest, *args, *extra]
+        proc = start(*cmd, "--profile", "release" if FULL else "dev", cwd=ROOT / "tests" / crate)
+        builds.append((name, ours, dest, proc))
+
+    wait(*(proc for *_, proc in builds))
+    tool = readobj()
+    for name, ours, dest, _ in builds:
         for target in ours:
             file = f"{name}.exe" if "-windows-" in target else name
             (out / target).mkdir(parents=True, exist_ok=True)
-            path = shutil.copy2(dest / target / "release" / file, out / target / file)
+            path = shutil.copy2(dest / target / PROFILE / file, out / target / file)
             check(target, Path(path), tool)
 
 
