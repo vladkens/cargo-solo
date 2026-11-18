@@ -15,6 +15,7 @@ check:
 	cargo +nightly fmt --check --manifest-path tests/hello/Cargo.toml
 	cargo +nightly fmt --check --manifest-path tests/cxx/Cargo.toml
 	uvx ruff format --check --line-length 100 scripts
+	cargo clippy --all-targets -- -D warnings
 	$(LINT)
 
 test:
