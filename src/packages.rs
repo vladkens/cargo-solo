@@ -587,6 +587,7 @@ fn fetch(pkg: &Package, path: &Path) -> io::Result<Vec<u8>> {
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60"]);
     curl.args(["--retry", "2", "-o"]).arg(path).arg(&url);
+
     let got = run(&mut curl).and_then(|_| fs::read(path));
     let _ = fs::remove_file(path);
     match got {
@@ -723,6 +724,7 @@ mod tests {
     ];
     let files: Vec<_> = files.iter().map(|(x, data)| (x.as_str(), *data)).collect();
     let tar = tarball(&files, &[]);
+
     let mut xz = vec![];
     lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
     fs::write(root.join(DARWIN[0].path), &xz).unwrap();
@@ -732,6 +734,7 @@ mod tests {
     let pkgs: Vec<_> =
       DARWIN.iter().map(|x| Package { mirrors: vec![mirror].leak(), sha256, ..*x }).collect();
     let dir = ensure(&root.join("cache"), "macos", &pkgs).unwrap();
+
     let read = |x: &str| fs::read_to_string(dir.join(x)).unwrap();
     assert_eq!(read("usr/include/stdio.h"), "stdio");
     assert_eq!(read("usr/include/sys/types.h"), "types");
@@ -740,6 +743,7 @@ mod tests {
     assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");
     assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
     assert!(read("usr/include/sys/syscall.h").contains("_SYS_SYSCALL_H_"));
+
     let names = |x: &str| {
       let mut out: Vec<_> =
         fs::read_dir(dir.join(x)).unwrap().map(|x| x.unwrap().file_name()).collect();
