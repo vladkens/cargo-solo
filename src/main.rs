@@ -28,7 +28,7 @@ fn start() -> io::Result<()> {
     return Err(exec(toolchain::wrap(target, cxx, argv.collect())?));
   }
 
-  let (args, targets) = match args::parse(env::args_os()) {
+  let (args, mut targets) = match args::parse(env::args_os()) {
     Cmd::Help => {
       print!("{}", args::help(&packages::cache()?.display().to_string()));
       return Ok(());
@@ -39,6 +39,12 @@ fn start() -> io::Result<()> {
     }
     Cmd::Cargo { args, targets } => (args, targets),
   };
+
+  // Without a --target, cargo builds for its config's build.target, else for the host.
+  if targets.is_empty() {
+    let var = env::var("CARGO_BUILD_TARGET").ok();
+    targets = toolchain::configured(&args, var.as_deref(), &env::current_dir()?);
+  }
 
   // cargo runs a subcommand with CARGO set to itself, so `cargo +nightly solo` stays on nightly.
   let mut cargo = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));

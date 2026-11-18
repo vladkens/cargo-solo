@@ -10,7 +10,7 @@ use std::process::Command;
 use std::{env, fs, io};
 
 use crate::packages::{self, Cxx, Libc, Package};
-use crate::{bad, run};
+use crate::{args, bad, run};
 
 /// The wrapper's clang, set by cargo-solo.
 const CLANG: &str = "CARGO_SOLO_CLANG";
@@ -625,12 +625,82 @@ fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
 
   let given = args.iter().map(|x| here.join(x.strip_prefix("--config=").unwrap_or(x)));
   let given = given.filter(|x| x.extension().is_some_and(|x| x == "toml"));
+  let mut texts = given.chain(configs(here)).filter_map(|x| fs::read_to_string(x).ok());
+  texts.any(|x| x.lines().any(|x| named(code(x))))
+}
+
+/// The targets cargo builds for when `args` have no `--target`, those of `build.target`, merged
+/// as cargo does: the arrays of every `--config` in `args` (a file or a `KEY=VALUE`) and config
+/// file, with CARGO_BUILD_TARGET's value `env` split by spaces; else the first string, the last
+/// `--config`'s, `env` or the nearest file's.
+pub fn configured(args: &[OsString], env: Option<&str>, here: &Path) -> Vec<String> {
+  let given = args::values(args, "--config");
+  let given = given.iter().rev().map(|x| fs::read_to_string(here.join(x)).unwrap_or(x.into()));
+  let given: Vec<_> = given.filter_map(|x| build_target(&x)).collect();
+  let files = configs(here).filter_map(|x| fs::read_to_string(x).ok());
+  let files: Vec<_> = files.filter_map(|x| build_target(&x)).collect();
+  let all = || given.iter().chain(&files);
+  if all().any(|x| x.trim_start().starts_with('[')) {
+    let env = env.into_iter().flat_map(|x| x.split_whitespace().map(String::from));
+    return all().flat_map(|x| strings(x)).chain(env).collect();
+  }
+
+  match (given.first(), env, files.first()) {
+    (Some(x), ..) | (None, None, Some(x)) => strings(x),
+    (None, Some(x), _) => vec![x.into()],
+    _ => vec![],
+  }
+}
+
+/// cargo's config files, nearest first: `config.toml` and `config` in `.cargo` of `here`, of each
+/// folder above and of CARGO_HOME.
+fn configs(here: &Path) -> impl Iterator<Item = PathBuf> {
   let home = env::var_os("CARGO_HOME").map(PathBuf::from);
   let home = home.or_else(|| env::home_dir().map(|x| x.join(".cargo")));
   let dirs = here.ancestors().map(|x| x.join(".cargo")).chain(home);
-  let files = given.chain(dirs.flat_map(|x| [x.join("config.toml"), x.join("config")]));
-  let mut texts = files.filter_map(|x| fs::read_to_string(x).ok());
-  texts.any(|x| x.lines().any(|x| named(code(x))))
+  dirs.flat_map(|x| [x.join("config.toml"), x.join("config")])
+}
+
+/// The value of `build.target` in a cargo config's `text` as TOML, when it sets it: in `[build]`,
+/// or as `build.target` before any table; a string or an array of them, which may span lines.
+fn build_target(text: &str) -> Option<String> {
+  let (mut table, mut lines) = (String::new(), text.lines().map(code));
+  while let Some(line) = lines.next() {
+    let line = line.trim();
+    if let Some(x) = line.strip_prefix('[') {
+      table = x.trim_end_matches(']').to_string();
+      continue;
+    }
+
+    let Some((key, value)) = line.split_once('=') else { continue };
+    let key = format!("{table}.{key}");
+    let key = key.split('.').map(|x| x.trim().trim_matches('"')).filter(|x| !x.is_empty());
+    if !key.eq(["build", "target"]) {
+      continue;
+    }
+
+    let mut value = value.to_string();
+    while value.trim_start().starts_with('[') && !value.contains(']') {
+      let Some(x) = lines.next() else { break };
+      value.push_str(x);
+    }
+
+    return Some(value);
+  }
+
+  None
+}
+
+/// The strings in TOML `value`, quoted with `"` or `'`, without escapes, as a target's name has.
+fn strings(value: &str) -> Vec<String> {
+  let (mut out, mut rest) = (vec![], value);
+  while let Some(i) = rest.find(['"', '\'']) {
+    let Some((x, after)) = rest[i + 1..].split_once(&rest[i..i + 1]) else { break };
+    out.push(x.to_string());
+    rest = after;
+  }
+
+  out
 }
 
 /// The major version in `clang --version`'s `text`.
@@ -971,6 +1041,38 @@ mod tests {
 
     fs::write(&config, r##"env = { A = "\"#", B = '#', CARGO_SOLO_TEST_CHOSEN = "0" }"##).unwrap();
     assert!(chosen("build"));
+    fs::remove_dir_all(&dir).unwrap();
+  }
+
+  #[test]
+  fn configured_reads_build_target_as_cargo_does() {
+    let dir = env::temp_dir().join(format!("cargo-solo-configured-{}", std::process::id()));
+    let (here, above) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
+    fs::create_dir_all(dir.join("a/.cargo")).unwrap();
+    fs::create_dir_all(here.join(".cargo")).unwrap();
+    let got = |line, env| configured(&args(line), env, &here);
+    fs::write(&above, "[env]\ntarget = \"n\"\n[ build ] # b\n# target = \"n\"\ntarget = 'y'\n")
+      .unwrap();
+    assert_eq!(got("build", None), ["y"]);
+
+    fs::write(here.join(".cargo/config"), "build.target = \"z\"\n[build]\njobs = 1\n").unwrap();
+    assert_eq!(got("build", None), ["z"]);
+    assert_eq!(got("build", Some("w")), ["w"]);
+
+    fs::write(here.join("my.toml"), "[build]\ntarget = \"u\"\n").unwrap();
+    assert_eq!(got("build --config my.toml", Some("w")), ["u"]);
+    assert_eq!(got(r#"build --config=build.target="t" --config my.toml"#, None), ["u"]);
+    assert_eq!(got(r#"build --config my.toml --config build.target="t""#, None), ["t"]);
+    assert_eq!(got(r#"run -- --config build.target="t""#, None), ["z"]);
+
+    // cargo joins the arrays and CARGO_BUILD_TARGET's names.
+    fs::write(&above, "[build]\ntarget = [\n  \"x\", # x\n  'y',\n]\n").unwrap();
+    fs::write(here.join(".cargo/config"), "build.target = [\"z\"]\n").unwrap();
+    assert_eq!(got("build", None), ["z", "x", "y"]);
+    assert_eq!(
+      got(r#"build --config build.target=["t"]"#, Some("v w")),
+      ["t", "z", "x", "y", "v", "w"]
+    );
     fs::remove_dir_all(&dir).unwrap();
   }
 
