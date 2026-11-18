@@ -109,15 +109,20 @@ The usual ways to cross-compile, and what each costs:
 | Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
 | C++, cmake | ✅ but for macOS | ✅ | ✅ |
 
-The first build of a crate with `ring` on GitHub's `ubuntu-latest` (x86_64, 4 CPUs): what each tool fetches or builds, and how much longer it takes than the next build. rustup's std for each target, which every tool needs, is left out. The web server is for Debian and Alpine (`x86_64-unknown-linux-gnu`, `-musl`), the CLI for Linux x86_64 and arm64 and Windows (both `-unknown-linux-musl`, `x86_64-pc-windows-gnu`).
-
-| First build | cargo-solo | cargo-zigbuild | cross |
-|---|---|---|---|
-| Once per machine | llvm-tools, 41 MB | Zig, 57 MB, 412 MB unpacked | Docker |
-| Web server | 14 MB, 57 MB unpacked, +4 s | 69 MB of libc built, +29 s | 4.7 GB of images, +53 s |
-| CLI | 24 MB, 234 MB unpacked, +4 s | 105 MB of libc built, +78 s | 9.4 GB of images, +86 s |
-
 Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ for macOS (cargo-zigbuild), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
+
+### First build
+
+On CI without a cache, every build is a first one: the tool fetches or compiles each target's libc. Seconds the first build takes and then the next one, for a crate with `ring` on GitHub's `ubuntu-latest` (x86_64, 4 CPUs):
+
+| | cargo-solo | cargo-zigbuild | cross |
+|---|---|---|---|
+| Linux gnu, musl | 12, then 8 | 34, then 5 | 70, then 18 |
+| musl ×2, Windows | 14, then 10 | 85, then 6 | 110, then 25 |
+| First build fetches | 14 or 24 MB | nothing, compiles libc | 4.7 or 9.4 GB |
+| Installed once | llvm-tools, 41 MB | Zig, 57 MB | Docker |
+
+The targets are `x86_64-unknown-linux-gnu` and `-musl`, then `x86_64` and `aarch64-unknown-linux-musl` with `x86_64-pc-windows-gnu`. cargo-zigbuild's next build is the fastest: Zig keeps the libc it compiled in its own cache.
 
 ## 🗺️ Roadmap
 

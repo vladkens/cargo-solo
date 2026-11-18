@@ -35,4 +35,4 @@ Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-work
 - A commit is one meaningful change a person can check: one short lowercase line, no body, docs updated in the same commit. When fixing your own unpushed commit, amend or fix up that commit instead of adding a separate fix.
 - Ask the person only when what cargo-solo does must change, a dependency is needed, or the request is ambiguous. Otherwise decide and say so in your report.
 - CI runners are `ubuntu-latest`, `macos-latest`, `windows-latest`, never pinned.
-- Keep docs to `readme.md` (users: short, each list item one line), `docs/how-it-works.md` (every variable cargo-solo sets and where each file comes from), the rustdoc, `agents.md`, the roadmap and the plans. No progress journals, run logs or disclaimer paragraphs.
+- Keep docs to `readme.md` (users: short, each list item one line), `docs/how-it-works.md` (every variable cargo-solo sets and where each file comes from), the rustdoc, `agents.md`, the roadmap, the plans and `changelog.md`. No progress journals, run logs or disclaimer paragraphs.
