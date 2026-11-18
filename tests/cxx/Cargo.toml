@@ -10,3 +10,6 @@ publish = false
 [build-dependencies]
 cc = "1.11.2"
 cmake = "0.1.58"
+
+[profile.dev]
+debug = false

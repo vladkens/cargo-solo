@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  E2E_FULL: "${{ github.event_name != 'pull_request' || startsWith(github.event.pull_request.title, 'release: v') }}"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
