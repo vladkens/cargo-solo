@@ -14,7 +14,7 @@ use tar::EntryType;
 use crate::{bad, run};
 
 /// Bumped when unpacking changes, so that every sysroot is unpacked anew into another folder.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 // MARK: Packages
 
@@ -263,6 +263,14 @@ exports:
 ...
 ";
 
+/// macOS's `sys/syscall.h`, which Zig's source doesn't have, without its numbers: jemalloc includes
+/// it on every Unix, and syscall(2), deprecated on macOS, is what they're for.
+const SYSCALL_H: &str = "/* cargo-solo's: macOS's header without the syscall numbers. */
+#ifndef _SYS_SYSCALL_H_
+#define _SYS_SYSCALL_H_
+#endif
+";
+
 // MARK: Cache
 
 /// The cache folder: `CARGO_SOLO_CACHE`, else `~/Library/Caches/cargo-solo` on macOS,
@@ -368,9 +376,9 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
   Ok(())
 }
 
-/// What Apple's SDK at `root` has beside Zig's files: libSystem's aliases, and libiconv. Its
-/// stub without `arm64e.x1`, which rust-lld before Rust 1.100 can't read: each list with it has
-/// `arm64e` too.
+/// What Apple's SDK at `root` has beside Zig's files: libSystem's aliases, libiconv and
+/// `sys/syscall.h`. Its stub without `arm64e.x1`, which rust-lld before Rust 1.100 can't read: each
+/// list with it has `arm64e` too.
 fn sdk(root: &Path) -> io::Result<()> {
   let lib = root.join("usr/lib");
   let path = lib.join("libSystem.tbd");
@@ -379,7 +387,12 @@ fn sdk(root: &Path) -> io::Result<()> {
     copy(&path, &lib.join(format!("lib{name}.tbd")))?;
   }
 
-  fs::write(lib.join("libiconv.tbd"), LIBICONV)
+  fs::write(lib.join("libiconv.tbd"), LIBICONV)?;
+  let path = root.join("usr/include/sys/syscall.h");
+  match path.exists() {
+    true => Ok(()),
+    false => fs::write(path, SYSCALL_H),
+  }
 }
 
 /// The `.tbd` text `tbd` without the targets that start with `arch`, each with its comma.
@@ -810,6 +823,7 @@ mod tests {
     assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]");
     assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");
     assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
+    assert!(read("usr/include/sys/syscall.h").contains("_SYS_SYSCALL_H_"));
     let names = |x: &str| {
       let mut out: Vec<_> =
         fs::read_dir(dir.join(x)).unwrap().map(|x| x.unwrap().file_name()).collect();

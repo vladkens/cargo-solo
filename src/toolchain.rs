@@ -22,6 +22,8 @@ const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
 /// Apple's SDK, which build scripts read, and the wrapper: cargo-solo's, or the user's, with its
 /// frameworks.
 const SDKROOT: &str = "SDKROOT";
+/// The flags bindgen gives its clang beside its own, by this name and the target's.
+const BINDGEN: &str = "BINDGEN_EXTRA_CLANG_ARGS";
 /// The oldest macOS an Apple binary runs on, which rustc and cc-rs read: without it, cc-rs off a
 /// Mac passes 10.7 for x86_64.
 const DEPLOYMENT_TARGET: &str = "MACOSX_DEPLOYMENT_TARGET";
@@ -111,14 +113,41 @@ impl Target {
 
   /// The environment cargo runs with for this target: the wrapper at `cc` its C compiler and its
   /// linker, which rustc takes for a C compiler driving the link by its name, `*-clang`; llvm-ar at
-  /// `ar` its archiver.
-  pub fn env(&self, cc: &Path, ar: &Path) -> [(String, OsString); 3] {
+  /// `ar` its archiver, and as `<target>-ranlib` in `tools` its ranlib, which OpenSSL's build
+  /// otherwise runs as plain `ranlib`, the host's.
+  pub fn env(&self, cc: &Path, ar: &Path, tools: &Path) -> [(String, OsString); 4] {
     let upper = self.rust.to_uppercase().replace('-', "_");
+    let ranlib = tools.join(exe(&format!("{}-ranlib", self.rust)));
     [
       (format!("CC_{}", self.rust), cc.into()),
       (format!("AR_{}", self.rust), ar.into()),
+      (format!("RANLIB_{}", self.rust), ranlib.into()),
       (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
     ]
+  }
+
+  /// The folders pkg-config searches for this target, its sysroot at `dir`, in place of the
+  /// host's: for the host's own triple, cargo lets it run, and it would give the host's libraries.
+  pub fn pkg_config(&self, dir: &Path) -> io::Result<OsString> {
+    let usr = dir.join("usr");
+    let dirs =
+      [usr.join("lib").join(self.clang), usr.join(self.clang).join("lib"), usr.join("lib")];
+    let dirs = dirs.iter().map(|x| x.join("pkgconfig")).chain([usr.join("share/pkgconfig")]);
+    env::join_paths(dirs).map_err(|e| bad(format!("{}: {e}", dir.display())))
+  }
+
+  /// The flags bindgen's clang takes for this target, its sysroot at `dir`, which would otherwise
+  /// parse the host's headers: the wrapper's to compile, each quoted, as bindgen splits them as a
+  /// shell does. For Apple, clang takes the SDK from SDKROOT, which may be the user's.
+  pub fn bindgen(&self, dir: &Path) -> OsString {
+    let mut flags = self.flags(dir, Path::new(""), &["-c".into()]);
+    if self.libc == Libc::Darwin {
+      flags.truncate(1);
+    }
+
+    let quote = |x: &OsString| format!("'{}'", x.to_string_lossy().replace('\'', r"'\''"));
+    let flags: Vec<_> = flags.iter().map(quote).collect();
+    flags.join(" ").into()
   }
 
   /// The flags the wrapper puts after clang's `args`, so that they win over the `--target` cc-rs
@@ -184,6 +213,8 @@ pub struct Host {
   sysroot: PathBuf,
   /// rustup's tools for the host, `lib/rustlib/<host>/bin` in rustc's sysroot.
   bin: PathBuf,
+  /// The host's target, by Rust's name.
+  triple: String,
   cache: PathBuf,
 }
 
@@ -211,7 +242,8 @@ impl Host {
       return Err(bad(format!("no rust-lld in {}", bin.display())));
     }
 
-    Ok(Host { clang: clang()?, sysroot, bin, cache: packages::cache()? })
+    let triple = host.to_string();
+    Ok(Host { clang: clang()?, sysroot, bin, triple, cache: packages::cache()? })
   }
 
   /// The environment the wrapper reads, the same for every target.
@@ -224,9 +256,10 @@ impl Host {
   }
 
   /// Sets `target` up: its std through rustup when it's missing, its sysroot, its wrapper; and
-  /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, for Windows
-  /// aws-lc-sys's NASM objects, for Apple the [SDK and the oldest macOS](Host::darwin), unless the
-  /// user chose in cargo's `args`, config or environment.
+  /// gives the environment cargo runs with for it: its [tools](tools) in front of PATH, its
+  /// sysroot for [pkg-config](Target::pkg_config) and [bindgen](Target::bindgen), for Windows
+  /// aws-lc-sys's NASM objects, for Apple the [SDK and the oldest macOS](Host::darwin), each but
+  /// the tools unless the user chose it in cargo's `args`, config or environment.
   pub fn setup(&self, target: &Target, args: &[OsString]) -> io::Result<Vec<(String, OsString)>> {
     // First, as it checks the tools before any download.
     let darwin = match target.libc {
@@ -241,18 +274,31 @@ impl Host {
     let sysroot = packages::ensure(&self.cache, target.sysroot(), target.packages)?;
     let cc = wrapper(&self.cache.join("bin"), target, &sysroot)?;
     let ar = self.bin.join(exe("llvm-ar"));
-    let mut out = target.env(&cc, &ar).to_vec();
-    out.extend(darwin);
     let dir = tools(&self.cache.join("bin"), target, &self.bin)?;
+    let mut out = target.env(&cc, &ar, &dir).to_vec();
+    out.extend(darwin);
     let path = env::var_os("PATH").unwrap_or_default();
     let path = env::join_paths([dir].into_iter().chain(env::split_paths(&path)));
     out.push(("PATH".into(), path.map_err(|e| bad(format!("PATH: {e}")))?));
+    let here = env::current_dir()?;
+    // pkg-config's names, as bindgen's but for `TARGET_<base>`, `HOST_<base>` for the host's own.
+    let kind = if target.rust == self.triple { "HOST" } else { "TARGET" };
+    let vars =
+      [("PKG_CONFIG_LIBDIR", target.pkg_config(&sysroot)?), (BINDGEN, target.bindgen(&sysroot))];
+    for (base, value) in vars {
+      let name = format!("{base}_{}", target.rust);
+      let under = format!("{base}_{}", target.rust.replace('-', "_"));
+      if !chosen(&[base, &name, &under, &format!("{kind}_{base}")], args, &here) {
+        out.push((name, value));
+      }
+    }
+
     if target.libc != Libc::Mingw {
       return Ok(out);
     }
 
     let nasm = format!("{PREBUILT_NASM}_{}", target.rust.replace('-', "_"));
-    if !chosen(&[PREBUILT_NASM, &nasm], args, &env::current_dir()?) {
+    if !chosen(&[PREBUILT_NASM, &nasm], args, &here) {
       out.push((nasm, "1".into()));
     }
 
@@ -309,8 +355,9 @@ impl Host {
 /// of `here`, of each folder above and of CARGO_HOME. By the name alone, which is all a choice
 /// needs.
 fn chosen(vars: &[&str], args: &[OsString], here: &Path) -> bool {
-  let named =
-    |x: &str| x.split(|x: char| !x.is_alphanumeric() && x != '_').any(|x| vars.contains(&x));
+  let named = |x: &str| {
+    x.split(|x: char| !x.is_alphanumeric() && !"_-".contains(x)).any(|x| vars.contains(&x))
+  };
   let args: Vec<_> = args.iter().map(|x| x.to_string_lossy()).collect();
   if vars.iter().any(|x| env::var_os(x).is_some()) || args.iter().any(|x| named(x)) {
     return true;
@@ -536,11 +583,14 @@ mod tests {
   }
 
   #[test]
-  fn env_sets_the_compiler_linker_and_archiver() {
+  fn env_sets_the_compiler_linker_archiver_and_ranlib() {
     let target = Target::find("aarch64-unknown-linux-musl").unwrap();
-    let [cc, ar, linker] = target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"));
+    let [cc, ar, ranlib, linker] =
+      target.env(Path::new("/c/cc"), Path::new("/r/llvm-ar"), Path::new("/t"));
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
+    let path = Path::new("/t").join(exe("aarch64-unknown-linux-musl-ranlib"));
+    assert_eq!(ranlib, ("RANLIB_aarch64-unknown-linux-musl".into(), path.into()));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
   }
 
@@ -575,11 +625,13 @@ mod tests {
     let (here, config) = (dir.join("a/b"), dir.join("a/.cargo/config.toml"));
     fs::create_dir_all(dir.join("a/.cargo")).unwrap();
     fs::create_dir_all(&here).unwrap();
-    let vars = ["CARGO_SOLO_TEST_CHOSEN", "CARGO_SOLO_TEST_CHOSEN_x"];
+    let vars = ["CARGO_SOLO_TEST_CHOSEN", "CARGO_SOLO_TEST_CHOSEN_x", "CARGO_SOLO_TEST_CHOSEN_x-y"];
     let chosen = |line| chosen(&vars, &args(line), &here);
     assert!(!chosen("build"));
     assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x=0"));
     assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_y=0"));
+    assert!(chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x-y=0"));
+    assert!(!chosen("build --config env.CARGO_SOLO_TEST_CHOSEN_x-z=0"));
 
     let comments = "[env]\n# CARGO_SOLO_TEST_CHOSEN = \"0\"\nA = 1 # CARGO_SOLO_TEST_CHOSEN\n";
     fs::write(&config, comments).unwrap();
@@ -635,6 +687,30 @@ mod tests {
     assert_eq!(flags("aarch64-apple-darwin", "a.o -o a -lSystem"), format!("{mac} {link}"));
     let x64 = format!("--target=x86_64-apple-macos -isysroot /c/sr {link}");
     assert_eq!(flags("x86_64-apple-darwin", "a.o -o a"), x64);
+  }
+
+  #[test]
+  fn bindgen_and_pkg_config_take_the_target_s_sysroot() {
+    let dir = Path::new("/c/sr");
+    let target = |name| TARGETS.iter().find(|x| x.rust == name).unwrap();
+    let bindgen = |name| target(name).bindgen(dir).into_string().unwrap().replace('\\', "/");
+    let gnu = "'--target=x86_64-linux-gnu' '--sysroot=/c/sr'";
+    assert_eq!(bindgen("x86_64-unknown-linux-gnu"), gnu);
+    let include = "'-idirafter' '/c/sr/usr/include/aarch64-linux-musl'";
+    let asm = "'-idirafter' '/c/sr/usr/include/aarch64-linux-gnu'";
+    let musl = format!("'--target=aarch64-linux-musl' '--sysroot=/c/sr' {include} {asm}");
+    assert_eq!(bindgen("aarch64-unknown-linux-musl"), musl);
+    let mingw = "'--target=x86_64-w64-mingw32' '--sysroot=/c/sr/usr'";
+    assert_eq!(bindgen("x86_64-pc-windows-gnu"), mingw);
+    assert_eq!(bindgen("aarch64-apple-darwin"), "'--target=arm64-apple-macos'");
+    let quoted = target("x86_64-unknown-linux-gnu").bindgen(Path::new("/it's"));
+    assert_eq!(quoted, r"'--target=x86_64-linux-gnu' '--sysroot=/it'\''s'");
+
+    let dirs = target("x86_64-pc-windows-gnu").pkg_config(dir).unwrap();
+    let dirs: Vec<_> =
+      env::split_paths(&dirs).map(|x| x.to_str().unwrap().replace('\\', "/")).collect();
+    let usr = ["lib/x86_64-w64-mingw32", "x86_64-w64-mingw32/lib", "lib", "share"];
+    assert_eq!(dirs, usr.map(|x| format!("/c/sr/usr/{x}/pkgconfig")));
   }
 
   #[test]
