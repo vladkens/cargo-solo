@@ -12,7 +12,7 @@ categories = ["development-tools::cargo-plugins", "development-tools::build-util
 include = ["/src/**/*.rs", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/readme.md"]
 
 [dependencies]
+flate2 = "1.1.11"
 hmac-sha256 = { version = "1.1.15", default-features = false }
 lzma-rs = "0.3.0"
-miniz_oxide = "0.9.1"
 tar = { version = "0.4.46", default-features = false }
