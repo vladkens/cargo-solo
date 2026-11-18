@@ -720,13 +720,21 @@ fn value(text: &str, key: &[&str]) -> Option<String> {
   None
 }
 
-/// The strings in TOML `value`, quoted with `"` or `'`, without escapes, as a target's name has.
+/// The strings in TOML `value`, quoted with `"` or `'`; in `"`, `\\` and `\"` taken as escapes,
+/// as in a Windows path.
 fn strings(value: &str) -> Vec<String> {
-  let (mut out, mut rest) = (vec![], value);
-  while let Some(i) = rest.find(['"', '\'']) {
-    let Some((x, after)) = rest[i + 1..].split_once(&rest[i..i + 1]) else { break };
-    out.push(x.to_string());
-    rest = after;
+  let (mut out, mut chars) = (vec![], value.chars());
+  while let Some(quote) = chars.find(|x| matches!(x, '"' | '\'')) {
+    let mut x = String::new();
+    while let Some(c) = chars.next() {
+      match c {
+        _ if c == quote => break,
+        '\\' if quote == '"' => x.extend(chars.next()),
+        _ => x.push(c),
+      }
+    }
+
+    out.push(x);
   }
 
   out
@@ -1110,6 +1118,8 @@ mod tests {
     let line = r#"build --config build.target=["t"]"#;
     assert_eq!(got(line, Some("v w")), ["t", "z", "v", "x", "y", "v", "w"]);
     fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(strings(r#"["a\\b", 'c\d', "e\"f"]"#), [r"a\b", r"c\d", "e\"f"]);
   }
 
   #[test]
