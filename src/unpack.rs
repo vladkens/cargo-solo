@@ -3,9 +3,10 @@
 //! streams, and the tarball inside, its links turned into files.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
+use flate2::read::MultiGzDecoder;
 use tar::EntryType;
 
 use crate::bad;
@@ -143,52 +144,10 @@ pub fn cpio(
   }
 }
 
-/// An Alpine package's tarball: its gzip streams (signature, control, data) joined. Per stream a
-/// 10-byte header with the flags at 3, the fields they name, the deflate data, an 8-byte trailer.
+/// An Alpine package's tarball: its gzip streams (signature, control, data) joined.
 pub fn gunzip(apk: &[u8]) -> io::Result<Vec<u8>> {
-  use miniz_oxide::inflate::stream::{InflateState, inflate};
-  use miniz_oxide::{DataFormat, MZFlush, MZStatus};
-
-  let short = || bad("the gzip stream is cut short");
   let mut out = vec![];
-  let mut rest = apk;
-  while !rest.is_empty() {
-    let [0x1f, 0x8b, 8, flags, ..] = *rest else { return Err(bad("not a gzip stream")) };
-    rest = rest.get(10..).ok_or_else(short)?;
-    // FEXTRA: its size, then its data.
-    if flags & 4 != 0 {
-      let size = rest.get(..2).map(|x| u16::from_le_bytes([x[0], x[1]]) as usize);
-      rest = rest.get(2 + size.ok_or_else(short)?..).ok_or_else(short)?;
-    }
-
-    // FNAME and FCOMMENT, each ended by a zero; then FHCRC.
-    for flag in [8, 16] {
-      if flags & flag != 0 {
-        rest = &rest[rest.iter().position(|x| *x == 0).ok_or_else(short)? + 1..];
-      }
-    }
-
-    if flags & 2 != 0 {
-      rest = rest.get(2..).ok_or_else(short)?;
-    }
-
-    let mut state = InflateState::new_boxed(DataFormat::Raw);
-    loop {
-      let at = out.len();
-      out.resize(at + (1 << 16), 0);
-      let got = inflate(&mut state, rest, &mut out[at..], MZFlush::None);
-      out.truncate(at + got.bytes_written);
-      rest = &rest[got.bytes_consumed..];
-      match got.status {
-        Ok(MZStatus::StreamEnd) => break,
-        Ok(_) => {}
-        Err(e) => return Err(bad(format!("gzip: {e:?}"))),
-      }
-    }
-
-    rest = rest.get(8..).ok_or_else(short)?;
-  }
-
+  MultiGzDecoder::new(apk).read_to_end(&mut out)?;
   Ok(out)
 }
 
@@ -298,6 +257,10 @@ pub fn copy(src: &Path, dst: &Path) -> io::Result<()> {
 #[cfg(test)]
 pub mod tests {
   use std::env;
+  use std::io::Write;
+
+  use flate2::Compression;
+  use flate2::write::GzEncoder;
 
   use super::*;
 
@@ -381,21 +344,6 @@ pub mod tests {
       pad(&mut out);
     }
 
-    out
-  }
-
-  /// A gzip stream of `data` with the header fields `flags` names, its trailer zeros.
-  fn gzip(data: &[u8], flags: u8) -> Vec<u8> {
-    let mut out = vec![0x1f, 0x8b, 8, flags, 0, 0, 0, 0, 0, 3];
-    let fields: [(u8, &[u8]); 4] = [(4, b"\x02\0ab"), (8, b"a.tar\0"), (16, b"hi\0"), (2, b"cc")];
-    for (flag, field) in fields {
-      if flags & flag != 0 {
-        out.extend(field);
-      }
-    }
-
-    out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
-    out.extend([0; 8]);
     out
   }
 
@@ -533,10 +481,14 @@ pub mod tests {
 
   #[test]
   fn gunzip_joins_an_apk_s_streams() {
-    // Over inflate's chunk.
-    let big: Vec<u8> = (0..200_000u32).map(|x| (x * 7 % 251) as u8).collect();
-    let apk = [gzip(b"sig", 0), gzip(b"control", 8), gzip(&big, 4 | 8 | 16 | 2)].concat();
-    assert_eq!(gunzip(&apk).unwrap(), [&b"sigcontrol"[..], &big].concat());
+    let gzip = |data: &[u8]| {
+      let mut out = GzEncoder::new(vec![], Compression::default());
+      out.write_all(data).unwrap();
+      out.finish().unwrap()
+    };
+
+    let apk = [gzip(b"sig"), gzip(b"control"), gzip(b"data")].concat();
+    assert_eq!(gunzip(&apk).unwrap(), b"sigcontroldata");
     assert!(gunzip(&apk[..apk.len() - 4]).is_err());
     assert!(gunzip(b"PK\x03\x04").is_err());
   }
