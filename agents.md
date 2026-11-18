@@ -23,7 +23,7 @@ Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-work
 ## Tests
 
 - Unit-test what breaks silently: the arguments passed to cargo, the environment and flags per target, the package tables, unpacking (symlinks, paths).
-- The proof is a binary that runs: the test crates `tests/hello` (`ring`, `aws-lc-rs`, C through `cc`, a C program linked as a configure script's, a C library through cmake, a thread, a `raw-dylib` link on Windows) and `tests/cxx` (C++ through `cc` and a library through cmake) built on every host for every target and run in its OS: Debian 10 and Alpine in Docker, Windows on a Windows runner, macOS on a Mac (`make e2e`, `scripts/e2e.py`). Check the highest `GLIBC_` symbol of every `-linux-gnu` binary.
+- The proof is a binary that runs: the test crates `tests/hello` (`ring`, `aws-lc-rs` behind its feature, C through `cc`, a C program linked as a configure script's, a C library through cmake, a thread, a `raw-dylib` link on Windows) and `tests/cxx` (C++ through `cc` and a library through cmake) built on every host for every target and run in its OS: Debian 10 and Alpine in Docker, Windows on a Windows runner, macOS on a Mac (`make e2e`, `scripts/e2e.py`). Pull requests build them in the dev profile without `aws-lc-rs`, to stay within 3 minutes; main and release PRs (`E2E_FULL=true`) in release with it. Check the highest `GLIBC_` symbol of every `-linux-gnu` binary.
 - Tests that download are `#[ignore]`d and run in CI. Tests use a temp folder for the cache, never the user's.
 
 ## Workflow
