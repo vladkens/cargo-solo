@@ -22,31 +22,8 @@ defaults:
     shell: bash
 
 jobs:
-  # checks and tests
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-      - run: rustup toolchain install nightly --profile minimal --component rustfmt
-      - run: make check
-        env:
-          PYTHONUTF8: 1 # the scripts read the sources as UTF-8 on Windows too
-      - run: make test
-      # every package from every mirror: the same from any host, so once
-      - if: runner.os == 'Linux'
-        run: cargo test -- --ignored
-
-  # the test crates built on each host for every target, their files checked; cmake is the
-  # runners', and on Windows ninja
+  # checks, tests, and the test crates built on each host for every target, their files checked;
+  # cmake is the runners', and on Windows ninja
   build:
     strategy:
       fail-fast: false
@@ -66,7 +43,17 @@ jobs:
           path: ${{ env.CARGO_SOLO_CACHE }}
           key: cargo-solo-${{ runner.os }}-${{ hashFiles('src/packages.rs') }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-      - run: uv run scripts/e2e.py build e2e
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: |
+          uv run scripts/e2e.py build e2e & build=$!
+          make check
+          make test
+          wait $build
+        env:
+          PYTHONUTF8: 1 # the scripts read the sources as UTF-8 on Windows too
+      # every package from every mirror: the same from any host, so once
+      - if: runner.os == 'Linux' && env.E2E_FULL == 'true'
+        run: cargo test -- --ignored
       - uses: actions/upload-artifact@v7
         with:
           name: e2e-${{ runner.os }}
@@ -105,7 +92,7 @@ jobs:
 
   publish:
     if: github.ref == 'refs/heads/main'
-    needs: [test, e2e, release]
+    needs: [build, e2e, release]
     runs-on: ubuntu-latest
     permissions:
       attestations: write
