@@ -146,11 +146,12 @@ impl Target {
   pub fn env(&self, cc: &Path, ar: &Path, tools: &Path) -> [(String, OsString); 4] {
     let upper = self.rust.to_uppercase().replace('-', "_");
     let ranlib = tools.join(exe(&format!("{}-ranlib", self.rust)));
+    let (cc, ar, ranlib) = (slash(cc), slash(ar), slash(&ranlib));
     [
-      (format!("CC_{}", self.rust), cc.into()),
-      (format!("AR_{}", self.rust), ar.into()),
-      (format!("RANLIB_{}", self.rust), ranlib.into()),
-      (format!("CARGO_TARGET_{upper}_LINKER"), cc.into()),
+      (format!("CC_{}", self.rust), cc.clone()),
+      (format!("AR_{}", self.rust), ar),
+      (format!("RANLIB_{}", self.rust), ranlib),
+      (format!("CARGO_TARGET_{upper}_LINKER"), cc),
     ]
   }
 
@@ -384,6 +385,16 @@ fn cat(flag: &str, path: &Path) -> OsString {
   out
 }
 
+/// `path` with Windows' `\` as `/`, which Windows takes too: a Makefile's command goes to sh, which
+/// drops each `\`, as openssl-src's `$(CC)` under MSYS2. A verbatim path, `\\?\`, keeps its `\`:
+/// Windows takes no `/` in it.
+fn slash(path: &Path) -> OsString {
+  match path.to_str() {
+    Some(x) if cfg!(windows) && !x.starts_with(r"\\?\") => x.replace('\\', "/").into(),
+    _ => path.into(),
+  }
+}
+
 // MARK: Host
 
 /// The tools every target shares: the host's clang, and rustup's lld and llvm-ar.
@@ -561,7 +572,7 @@ impl Host {
     if target.cxx.is_some()
       && let Some(name) = free("CXX", false)
     {
-      out.push((name, cxx.into()));
+      out.push((name, slash(cxx)));
     }
 
     // For Apple, cmake's C++ compiler is the C one, which compiles the C++ that needs no library,
@@ -892,8 +903,16 @@ mod tests {
     assert_eq!(cc, ("CC_aarch64-unknown-linux-musl".into(), "/c/cc".into()));
     assert_eq!(ar, ("AR_aarch64-unknown-linux-musl".into(), "/r/llvm-ar".into()));
     let path = Path::new("/t").join(exe("aarch64-unknown-linux-musl-ranlib"));
-    assert_eq!(ranlib, ("RANLIB_aarch64-unknown-linux-musl".into(), path.into()));
+    assert_eq!(ranlib, ("RANLIB_aarch64-unknown-linux-musl".into(), slash(&path)));
     assert_eq!(linker, ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER".into(), "/c/cc".into()));
+
+    // `\` is a separator on Windows only, elsewhere a name's character.
+    let [(_, cc), ..] =
+      target.env(Path::new(r"C:\c\cc.exe"), Path::new("/r/llvm-ar"), Path::new("/t"));
+    assert_eq!(cc, if cfg!(windows) { "C:/c/cc.exe" } else { r"C:\c\cc.exe" });
+    let [(_, cc), ..] =
+      target.env(Path::new(r"\\?\C:\c\cc.exe"), Path::new("/r/llvm-ar"), Path::new("/t"));
+    assert_eq!(cc, r"\\?\C:\c\cc.exe");
   }
 
   #[test]
