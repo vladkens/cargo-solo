@@ -7,10 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs, io};
 
-use crate::config::chosen;
 use crate::packages::{self, Libc};
 use crate::toolchain::{CLANG, GCC_LD, SDKROOT, TARGETS, Target, exe, slash};
-use crate::{bad, run};
+use crate::{bad, chosen, run};
 
 /// aws-lc-sys, rustls' crypto, assembles x86_64 Windows' code with nasm, which a host seldom has;
 /// this lets it take the objects it ships instead, when there's no nasm.
