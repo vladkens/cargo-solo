@@ -16,14 +16,14 @@ Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-work
 ## Code
 
 - Start every `.rs` file with `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo`, then a `//!` doc whose first sentence says what the file does.
-- A file holds one feature (the arguments, cargo's config, a target's toolchain, setting the host up for it, the packages, unpacking them), not one helper each. Inside a file, `// MARK: <name>` separates its blocks.
+- The command line (its arguments, the config it reads, the run) stays in `main.rs`. A feature gets its own file only when it stands alone, never one file per helper. Inside a file, `// MARK: <name>` separates its blocks.
 - A comment adds what the code doesn't say, briefly: a toolchain quirk, why a package or a flag is needed. It never restates the code. Code taken from another project names it in the file's header (project, licence, link to the file); code moved from the person's own projects says nothing of where it came from.
 - Helper scripts go in `scripts/`, kebab-case, Python run with `uv run`.
 
 ## Tests
 
 - Unit-test what breaks silently: the arguments passed to cargo, the environment and flags per target, the package tables, unpacking (symlinks, paths).
-- The proof is a binary that runs: the test crates `tests/hello` (`ring`, `aws-lc-rs` behind its feature, C through `cc`, a C program linked as a configure script's, a C library through cmake, a thread, a `raw-dylib` link on Windows) and `tests/cxx` (C++ through `cc` and a library through cmake) built on every host for every target and run in its OS: Debian 10 and Alpine in Docker, Windows on a Windows runner, macOS on a Mac (`make e2e`, `scripts/e2e.py`). Pull requests build them in the dev profile without `aws-lc-rs`, to stay within 3 minutes; main and release PRs (`E2E_FULL=true`) in release with it. Check the highest `GLIBC_` symbol of every `-linux-gnu` binary.
+- The proof is a binary that runs: the test crates `tests/hello` (`ring`, `aws-lc-rs`, C through `cc`, a C program linked as a configure script's, a C library through cmake, a thread, a `raw-dylib` link on Windows) and `tests/cxx` (C++ through `cc` and a library through cmake) built on every host for every target and run in its OS: Debian 10 and Alpine in Docker, Windows on a Windows runner, macOS on a Mac (`make e2e`, `scripts/e2e.py`). Check the highest `GLIBC_` symbol of every `-linux-gnu` binary.
 - Tests that download are `#[ignore]`d and run in CI. Tests use a temp folder for the cache, never the user's.
 
 ## Workflow
@@ -34,5 +34,5 @@ Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-work
 - Before committing, run `make check` and `make test`. `make prepare` rewrites files: not a check.
 - A commit is one meaningful change a person can check: one short lowercase line, no body, docs updated in the same commit. When fixing your own unpushed commit, amend or fix up that commit instead of adding a separate fix.
 - Ask the person only when what cargo-solo does must change, a dependency is needed, or the request is ambiguous. Otherwise decide and say so in your report.
-- CI runners are `ubuntu-latest`, `macos-latest`, `windows-latest`, never pinned.
+- CI runners are `ubuntu-latest`, `macos-latest`, `windows-latest`, never pinned. CI on a pull request takes at most 3 minutes.
 - Keep docs to `readme.md` (users: short, each list item one line), `docs/how-it-works.md` (every variable cargo-solo sets and where each file comes from), the rustdoc, `agents.md`, the roadmap, the plans and `changelog.md`. No progress journals, run logs or disclaimer paragraphs.
