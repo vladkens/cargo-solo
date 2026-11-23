@@ -199,14 +199,21 @@ impl Target {
     // rustc passes gcc's -no-pie with -static for aarch64 musl, which clang warns is unused, and
     // the warning shows in every build as the linker's.
     out.push("-Qunused-arguments".into());
-    if self.libc == Libc::Musl {
+    match self.libc {
       // For what clang links itself, as a configure script's test: the crt objects, libc and
       // libgcc are in musl's Debian folder, which clang doesn't search, and libgcc is static, as
       // with Debian's musl-gcc. Rust links with its own.
-      let lib = dir.join("usr/lib").join(self.clang);
-      out.push(cat("-B", &lib));
-      out.push(cat("-L", &lib));
-      out.push("-static-libgcc".into());
+      Libc::Musl => {
+        let lib = dir.join("usr/lib").join(self.clang);
+        out.push(cat("-B", &lib));
+        out.push(cat("-L", &lib));
+        out.push("-static-libgcc".into());
+      }
+      // What MinGW's gcc links that clang, or rustc's -nodefaultlibs, leaves out: winpthreads,
+      // static as rustc links it, else CMake's FindThreads passes -pthread to NASM too; advapi32
+      // and shell32, which a build script may name only when it runs on Windows.
+      Libc::Mingw => out.extend(["-l:libpthread.a", "-ladvapi32", "-lshell32"].map(OsString::from)),
+      Libc::Glibc | Libc::Darwin => {}
     }
 
     out
@@ -247,8 +254,8 @@ impl Target {
     match self.libc {
       // glibc 2.28 has its threads in libpthread.
       Libc::Glibc => out.push("-pthread".into()),
-      // libgcc and winpthreads static, as rustc links them, not their DLLs.
-      Libc::Mingw => out.extend(["-static-libgcc".into(), "-l:libpthread.a".into()]),
+      // libgcc static, as rustc links it, not its DLL.
+      Libc::Mingw => out.push("-static-libgcc".into()),
       Libc::Musl | Libc::Darwin => {}
     }
 
@@ -504,8 +511,10 @@ mod tests {
       "-B/c/sr/usr/lib/aarch64-linux-musl -L/c/sr/usr/lib/aarch64-linux-musl -static-libgcc";
     assert_eq!(flags("aarch64-unknown-linux-musl", "a.c -o a"), format!("{musl} {link} {lib}"));
 
-    let mingw = format!("--target=x86_64-w64-mingw32 --sysroot=/c/sr/usr {link}");
-    assert_eq!(flags("x86_64-pc-windows-gnu", "a.o -o a.exe"), mingw);
+    let mingw = "--target=x86_64-w64-mingw32 --sysroot=/c/sr/usr";
+    let libs = "-l:libpthread.a -ladvapi32 -lshell32";
+    assert_eq!(flags("x86_64-pc-windows-gnu", "-c a.c"), mingw);
+    assert_eq!(flags("x86_64-pc-windows-gnu", "a.o -o a.exe"), format!("{mingw} {link} {libs}"));
 
     let mac = "--target=arm64-apple-macos -isysroot /c/sr";
     assert_eq!(flags("aarch64-apple-darwin", "-c a.c -isysroot /x"), mac);
@@ -581,7 +590,7 @@ mod tests {
 
     let mingw = flags("x86_64-pc-windows-gnu", true, "a.o -o a.exe");
     assert!(mingw.contains("/c/cxx/14-posix/include/c++/x86_64-w64-mingw32 "));
-    assert!(mingw.ends_with(" -femulated-tls -L/c/cxx/14-posix -static-libgcc -l:libpthread.a"));
+    assert!(mingw.ends_with(" -femulated-tls -L/c/cxx/14-posix -static-libgcc"));
   }
 
   #[test]
