@@ -62,6 +62,26 @@ fn values(args: &[OsString], flag: &str) -> Vec<String> {
   out
 }
 
+/// Whether `args` has one of `flags`, before a `--`.
+fn has(args: &[OsString], flags: &[&str]) -> bool {
+  let args = args.iter().take_while(|x| *x != "--");
+  args.filter_map(|x| x.to_str()).any(|x| flags.contains(&x))
+}
+
+/// cargo's command in `args`: the first arg that is neither a flag nor a global flag's value.
+fn command(args: &[OsString]) -> Option<&str> {
+  let mut it = args.iter().map(|x| x.to_str().unwrap_or_default());
+  while let Some(arg) = it.next() {
+    match arg {
+      "--color" | "--config" | "-Z" | "-C" => _ = it.next(),
+      _ if arg.starts_with('-') => {}
+      _ => return Some(arg),
+    }
+  }
+
+  None
+}
+
 /// The help, with the cache folder `cache`.
 fn help(cache: &str) -> String {
   let ours = || TARGETS.iter().filter(|x| x.here());
@@ -83,6 +103,7 @@ libc, and, but for macOS, its C++ compiler and cmake toolchain file; any other g
 Needs clang, and rustup to add a target or llvm-tools when missing; cmake for crates built with it,
 and on Windows ninja. Each target's libc comes from Debian's packages (Apple's SDK from Zig's
 source) on first use, its libstdc++ on the first C++ compile, cached in {cache} (CARGO_SOLO_CACHE).
+`cargo solo fetch --target <target>` fetches them all ahead, and in a project its crates too.
 "
   )
 }
@@ -127,12 +148,25 @@ fn start() -> io::Result<()> {
   // cargo runs a subcommand with CARGO set to itself, so `cargo +nightly solo` stays on nightly.
   let mut cargo = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
   let ours: Vec<_> = targets.iter().filter_map(|x| Target::find(x)).collect();
+  // A fetch that may not touch the network leaves the C++ library to the first C++ compile.
+  let fetch = command(&args) == Some("fetch") && !has(&args, &["--offline", "--frozen"]);
   if !ours.is_empty() {
     let host = Host::find()?;
     cargo.envs(host.env());
-    for target in ours {
+    for target in &ours {
       cargo.envs(host.setup(target, &args)?);
+      // What the first C++ compile would fetch, so that no build after it needs the network.
+      if let Some(lib) = target.cxx.filter(|_| fetch) {
+        packages::ensure(&packages::cache()?, &target.libstdcxx(), lib.packages)?;
+      }
     }
+  }
+
+  // Outside a project, as a Dockerfile's step before it copies the sources, a fetch is ours alone:
+  // cargo would fail with no Cargo.toml. Its help is cargo's still.
+  let asks = has(&args, &["-h", "--help"]);
+  if fetch && !asks && !ours.is_empty() && !project(&args, &env::current_dir()?) {
+    return Ok(());
   }
 
   cargo.args(args);
@@ -219,6 +253,14 @@ fn configured(args: &[OsString], env: Option<&str>, here: &Path) -> Vec<String> 
     (None, Some(x), _) => vec![x.into()],
     _ => vec![],
   }
+}
+
+/// Whether cargo may find a project for `args` run in `here`: one `--manifest-path` (`-m`) names,
+/// one in the folder of `-C`, or a Cargo.toml there or in a folder above.
+fn project(args: &[OsString], here: &Path) -> bool {
+  let mut args = args.iter().take_while(|x| *x != "--").filter_map(|x| x.to_str());
+  let named = |x: &str| x.starts_with("--manifest-path") || x.starts_with("-m") || x == "-C";
+  args.any(named) || here.ancestors().any(|x| x.join("Cargo.toml").is_file())
 }
 
 /// How deep config files' `include`s nest at most, against a loop.
@@ -357,6 +399,15 @@ mod tests {
   }
 
   #[test]
+  fn command_skips_cargo_s_global_flags() {
+    let got = |line: &str| command(&args(line)).map(String::from);
+    assert_eq!(got("fetch --target x").as_deref(), Some("fetch"));
+    assert_eq!(got("-v --color always --config a=1 -Z x -C a fetch").as_deref(), Some("fetch"));
+    assert_eq!(got("--color=never build").as_deref(), Some("build"));
+    assert_eq!(got("-v"), None);
+  }
+
+  #[test]
   fn parse_keeps_help_and_version_of_cargo_commands() {
     assert_eq!(cmd("cargo-solo"), Cmd::Help);
     assert_eq!(cmd("cargo-solo solo"), Cmd::Help);
@@ -447,5 +498,23 @@ mod tests {
     fs::remove_dir_all(&dir).unwrap();
 
     assert_eq!(strings(r#"["a\\b", 'c\d', "e\"f"]"#), [r"a\b", r"c\d", "e\"f"]);
+  }
+
+  #[test]
+  fn project_is_where_cargo_finds_one() {
+    let dir = env::temp_dir().join(format!("cargo-solo-project-{}", std::process::id()));
+    let here = dir.join("a/b");
+    fs::create_dir_all(&here).unwrap();
+    assert!(!project(&args("fetch --target x"), &here));
+    assert!(project(&args("fetch --manifest-path ../c/Cargo.toml"), &here));
+    assert!(project(&args("fetch --manifest-path=c/Cargo.toml"), &here));
+    assert!(project(&args("fetch -m c/Cargo.toml"), &here));
+    assert!(project(&args("fetch -mc/Cargo.toml"), &here));
+    assert!(project(&args("-C c fetch"), &here));
+    assert!(!project(&args("run -- --manifest-path c"), &here));
+
+    fs::write(dir.join("a/Cargo.toml"), "").unwrap();
+    assert!(project(&args("fetch"), &here));
+    fs::remove_dir_all(&dir).unwrap();
   }
 }
