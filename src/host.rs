@@ -8,7 +8,9 @@ use std::process::Command;
 use std::{env, fs, io};
 
 use crate::packages::{self, Libc};
-use crate::toolchain::{CLANG, GCC_LD, SDKROOT, TARGETS, Target, exe, slash};
+use crate::toolchain::{
+  CLANG, DEPLOYMENT_TARGET, GCC_LD, SDKROOT, TARGETS, Target, exe, slash, version,
+};
 use crate::{bad, chosen, run};
 
 /// aws-lc-sys, rustls' crypto, assembles x86_64 Windows' code with nasm, which a host seldom has;
@@ -16,9 +18,6 @@ use crate::{bad, chosen, run};
 const PREBUILT_NASM: &str = "AWS_LC_SYS_PREBUILT_NASM";
 /// The flags bindgen gives its clang beside its own, by this name and the target's.
 const BINDGEN: &str = "BINDGEN_EXTRA_CLANG_ARGS";
-/// The oldest macOS an Apple binary runs on, which rustc and cc-rs read: without it, cc-rs off a
-/// Mac passes 10.7 for x86_64.
-const DEPLOYMENT_TARGET: &str = "MACOSX_DEPLOYMENT_TARGET";
 
 /// The tools every target shares: the host's clang, and rustup's lld and llvm-ar.
 pub struct Host {
@@ -127,7 +126,7 @@ impl Host {
 
   /// For Apple's `target`: [SDKROOT], its sysroot, and [DEPLOYMENT_TARGET], the oldest of rustc's
   /// for Apple, each unless the user chose it. Neither has a name per target, so one value serves
-  /// both: rustc and clang raise x86_64's 10.12 to arm64's minimum, 11.0.
+  /// both: rustc and the wrapper raise x86_64's 10.12 to arm64's minimum, 11.0.
   fn darwin(
     &self,
     target: &Target,
@@ -167,14 +166,14 @@ impl Host {
       vers.push(ver.ok_or_else(|| bad(format!("rustc's deployment target: {text}")))?);
     }
 
-    let key = |x: &String| x.split('.').map(|x| x.parse().unwrap_or(0)).collect::<Vec<u32>>();
-    out.extend(vers.into_iter().min_by_key(key).map(|x| (DEPLOYMENT_TARGET.into(), x.into())));
+    let ver = vers.into_iter().min_by_key(|x| version(x));
+    out.extend(ver.map(|x| (DEPLOYMENT_TARGET.into(), x.into())));
     Ok(out)
   }
 
-  /// The environment for `target`'s C++ and cmake: `CXX_<t>` the wrapper as clang++ (not for Apple,
-  /// with no C++ library), `CMAKE_TOOLCHAIN_FILE_<t>`, and on Windows with ninja, Ninja over Visual
-  /// Studio or MinGW's make; each unless the user chose.
+  /// The environment for `target`'s C++ and cmake: `CXX_<t>` the wrapper as clang++,
+  /// `CMAKE_TOOLCHAIN_FILE_<t>`, and on Windows with ninja, Ninja over Visual Studio or MinGW's
+  /// make; each unless the user chose.
   fn cxx(
     &self,
     target: &Target,
@@ -185,15 +184,9 @@ impl Host {
   ) -> io::Result<Vec<(String, OsString)>> {
     let mut out = vec![];
     // Not plain `CXX`: cc reads it for the host too.
-    if target.cxx.is_some()
-      && let Some(name) = free("CXX", false)
-    {
+    if let Some(name) = free("CXX", false) {
       out.push((name, slash(cxx)));
     }
-
-    // For Apple, cmake's C++ compiler is the C one, which compiles the C++ that needs no library,
-    // as cmake's check of its C++ compiler does.
-    let cxx = if target.cxx.is_some() { cxx } else { cc };
 
     if let Some(name) = free("CMAKE_TOOLCHAIN_FILE", true) {
       let (ar, nm) = (self.bin.join(exe("llvm-ar")), self.bin.join(exe("llvm-nm")));

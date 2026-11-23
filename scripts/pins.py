@@ -11,7 +11,8 @@ A Debian package is `Package::deb(TRIXIE, "<pool path>", "<sha256>")`: its relea
 table's name, its name and arch are in the file name; a new one can have the empty hash. A
 release's snapshot.debian.org mirror moves to the latest snapshot when one of its packages
 changes. A snapshot lags Debian by up to six hours: until it has the new packages, nothing is
-written. Zig's source tarball, Apple's SDK, moves to Zig's latest release.
+written. Zig's source tarball, Apple's SDK, moves to Zig's latest release. LLVM's libc++ stays at
+20.1.8, by hand: its headers take clang 18, 22's need clang 20.
 
 An AlmaLinux or Alpine package is `mirrors: <table>, path: "<arch>/<path>", sha256: "<sha256>"`:
 its name is in the file name. AlmaLinux's is its latest build in the repodata, with its SHA-256;

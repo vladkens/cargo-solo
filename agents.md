@@ -1,15 +1,15 @@
 # cargo-solo
 
-A cargo subcommand, `cargo solo`, that cross-compiles Rust, C and C++ dependencies included, for Linux (glibc and musl) and Windows (gnu) on a Mac, Linux or Windows, and for macOS on Linux or Windows, with no Zig, Docker or prebuilt toolchain: the host's clang compiles C and C++ and drives the link, rustup's rust-lld links and its llvm-ar archives, and each target's libc, headers and libstdc++ come from the distros' own packages (macOS's from Zig's source tarball, Zig never run), fetched on first use, pinned by SHA-256 and cached. One crate, `cargo-solo`. Agents carry out each change end to end by following this file.
+A cargo subcommand, `cargo solo`, that cross-compiles Rust, C and C++ dependencies included, for Linux (glibc and musl) and Windows (gnu) on a Mac, Linux or Windows, and for macOS on Linux or Windows, with no Zig, Docker or prebuilt toolchain: the host's clang compiles C and C++ and drives the link, rustup's rust-lld links and its llvm-ar archives, and each target's libc, headers and libstdc++ come from the distros' own packages (macOS's from Zig's and LLVM's source tarballs, Zig never run, with macOS's own libc++), fetched on first use, pinned by SHA-256 and cached. One crate, `cargo-solo`. Agents carry out each change end to end by following this file.
 
 Each fact has one source: what cargo-solo does is `readme.md`, `docs/how-it-works.md` and `cargo solo --help`, the packages and their hashes the code's tables, dependencies `Cargo.toml`, checks the `Makefile`, what comes next `docs/roadmap.md`, the work under way `docs/plans/`.
 
 ## Scope
 
 - Hosts: macOS on Apple silicon, Linux x86_64 and aarch64, Windows x86_64. Targets: `x86_64` and `aarch64` `-unknown-linux-gnu` (glibc 2.28) and `-unknown-linux-musl`, `x86_64-pc-windows-gnu`; on Linux and Windows, `aarch64` and `x86_64` `-apple-darwin`, without Apple's frameworks. Any other target, and Apple's on a Mac, goes to cargo untouched.
-- C and C++ through the `cc` crate, and crates built through cmake (cmake-rs), with GCC 14's libstdc++ linked statically; for macOS, C only. Other glibc versions come later, when a real project needs them.
+- C and C++ through the `cc` crate, and crates built through cmake (cmake-rs), with GCC 14's libstdc++ linked statically; for macOS, the system's libc++, linked as Xcode links it. Other glibc versions come later, when a real project needs them.
 - The basic case works with no config and no flags of its own; cargo-solo doesn't chase every case Zig covers.
-- Nothing of ours is hosted: every file cargo-solo fetches is the distro's, rustup's or Zig's, pinned by version and SHA-256 in the code. cargo-solo installs nothing but through rustup (a target, `llvm-tools`) and writes nothing outside its cache and cargo's target folder.
+- Nothing of ours is hosted: every file cargo-solo fetches is the distro's, rustup's, Zig's or LLVM's, pinned by version and SHA-256 in the code. cargo-solo installs nothing but through rustup (a target, `llvm-tools`) and writes nothing outside its cache and cargo's target folder.
 - Leave the user's `RUSTFLAGS`, `CFLAGS` and cargo config theirs: cargo-solo adds its flags without replacing any.
 - Change the CLI only with the person's approval. Add a dependency only with the person's approval; prefer a small own routine. Change dependencies only with `cargo add`, `cargo remove` or `cargo upgrade`, never by hand.
 
