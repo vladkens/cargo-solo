@@ -25,6 +25,7 @@ A link needs only a framework's `.tbd`: the names it exports and its install nam
 
 - C that includes a framework's headers (curl-sys, rdkafka-sys, git2's libgit2 with Security): no headers.
 - Other frameworks (AppKit, Foundation, Metal, CoreAudio) and `-lobjc`: objc2 has crates for most, a row each when a crate needs one.
+- Availability: objc2's bindings are every Apple OS's, with no mark of which has what, so a stub also lists names macOS lacks, such as tvOS' `kSecUseUserIndependentKeychain`. Code that calls one links here and fails at load ("Symbol not found"), where Xcode's SDK fails the link; a crate that builds on a Mac never calls one.
 - `scripts/pins.py` doesn't re-pin the crates: one version for all five, bumped by hand.
 
 ## Result
