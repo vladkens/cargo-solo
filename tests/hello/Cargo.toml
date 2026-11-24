@@ -20,3 +20,8 @@ aws-lc-rs = ["dep:aws-lc-rs"]
 
 [profile.dev]
 debug = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+iana-time-zone = "0.1.65"
+security-framework = "3.7.0"
+system-configuration = "0.8.0"

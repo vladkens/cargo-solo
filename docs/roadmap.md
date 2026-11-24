@@ -13,6 +13,7 @@ Done:
 - [x] **The target from cargo config.** With no `--target`, the targets of `build.target` in cargo's config or `CARGO_BUILD_TARGET`, as cargo-zigbuild, cargo-xwin and zijiren233/cargo-cross do.
 - [x] **The user's `CC_<t>` wins.** `CC_<t>`, `AR_<t>` and the linker set only when the user hasn't, as cargo-zigbuild does.
 - [x] **C++ for macOS targets.** `CXX_<t>` and cmake's C++ for `-apple-darwin` on Linux and Windows hosts, linked against macOS's own `libc++.1.dylib` as Xcode links it: libc++'s headers in the SDK, configured as Apple's, and stubs of the dylibs made from LLVM's lists of their exports. Plan: [20261124-mac-cxx.md](plans/completed/20261124-mac-cxx.md).
+- [x] **Apple's frameworks for Rust.** CoreFoundation, Security, SystemConfiguration, IOKit and CoreServices for macOS from Linux and Windows, so chrono, native-tls, reqwest, sysinfo and notify link: `.tbd` stubs of what objc2's crates bind, never Apple's files. C with a framework's headers still needs `SDKROOT`. Plan: [20261124-frameworks.md](plans/completed/20261124-frameworks.md).
 
 Next, in order:
 

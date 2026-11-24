@@ -115,7 +115,7 @@ def check(target: str, path: Path, tool: Path) -> None:
         text = run(tool, "--needed-libs", "--macho-version-min", path)
         libs = re.search(r"NeededLibraries \[\n(.*?)\n\]", text, re.S)[1].split()
         ver = tuple(int(x) for x in re.search(r"Version: ([0-9.]+)", text)[1].split("."))
-        other = [x for x in libs if not x.startswith("/usr/lib/")]
+        other = [x for x in libs if not x.startswith(("/usr/lib/", "/System/Library/Frameworks/"))]
         if not libs or other or ver > MACOS[target.split("-")[0]]:
             sys.exit(f"e2e: {target} needs macOS {ver} and loads {libs}")
 

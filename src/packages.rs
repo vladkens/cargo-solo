@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-//! The sysroots: each target's packages from the distros, rustup, Zig and LLVM, pinned by SHA-256,
-//! fetched by the system's `curl` on first use and unpacked into the cache.
+//! The sysroots: each target's packages from the distros, rustup, Zig, LLVM and crates.io, pinned
+//! by SHA-256, fetched by the system's `curl` on first use and unpacked into the cache.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,7 +40,7 @@ impl Libc {
 #[derive(Debug)]
 pub struct Package {
   pub mirrors: &'static [&'static str],
-  /// The path under each mirror, of a `.deb`, an `.rpm`, an `.apk` or a `.tar.xz`.
+  /// The path under each mirror, of a `.deb`, an `.rpm`, an `.apk`, a `.crate` or a `.tar.xz`.
   pub path: &'static str,
   pub sha256: &'static str,
   /// The folder in the archive the files are taken from; of those, the ones whose path there
@@ -80,6 +80,9 @@ const ZIG: &[&str] = &["https://ziglang.org/download/0.17.1", "https://pkg.hexop
 /// LLVM 20.1.8's release on GitHub, the sources of each of its projects.
 const LLVM: &[&str] = &["https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8"];
 
+/// crates.io's files, which never change once published.
+const CRATES_IO: &[&str] = &["https://static.crates.io/crates"];
+
 /// AlmaLinux 8.10's AppStream, RHEL 8's rebuilt, and kernel.org's copy: 8's last release, whose
 /// packages stay until 8's end in 2029.
 const ALMA8: &[&str] = &[
@@ -112,6 +115,11 @@ impl Package {
       keep,
       into,
     }
+  }
+
+  /// A crate of objc2's that binds an Apple framework, unpacked into [OBJC2] for [sdk].
+  const fn objc2(path: &'static str, sha256: &'static str) -> Package {
+    Package { mirrors: CRATES_IO, path, sha256, root: "", keep: &[""], into: OBJC2 }
   }
 
   const fn only(
@@ -261,6 +269,7 @@ pub const MINGW_X64: &[Package] = &[
 /// Apple's SDK for both arches, laid out as Xcode's: from Zig's source, macOS's headers and
 /// libSystem's `.tbd`, the stub a link needs, not Zig's `SDKSettings.json`, which clang warns of;
 /// from LLVM's, libc++ 20's (Zig's 22 needs clang 20) headers and its exports, for [sdk]'s `.tbd`.
+/// From objc2's crates, Rust's bindings, what the frameworks common crates link export, for [sdk].
 pub const DARWIN: &[Package] = &[
   Package::zig("zig-0.17.1/lib/libc/include/any-darwin-any/", &[""], "usr/include/"),
   Package::zig("zig-0.17.1/lib/libc/darwin/", &["libSystem.tbd"], "usr/lib/"),
@@ -272,6 +281,42 @@ pub const DARWIN: &[Package] = &[
     &["__cxxabi_config.h", "cxxabi.h"],
     LIBCXX_INCLUDE,
   ),
+  Package::objc2(
+    "objc2-core-foundation/objc2-core-foundation-0.3.2.crate",
+    "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+  ),
+  Package::objc2(
+    "objc2-core-services/objc2-core-services-0.3.2.crate",
+    "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b",
+  ),
+  Package::objc2(
+    "objc2-io-kit/objc2-io-kit-0.3.2.crate",
+    "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15",
+  ),
+  Package::objc2(
+    "objc2-security/objc2-security-0.3.2.crate",
+    "709fe137109bd1e8b5a99390f77a7d8b2961dafc1a1c5db8f2e60329ad6d895a",
+  ),
+  Package::objc2(
+    "objc2-system-configuration/objc2-system-configuration-0.3.2.crate",
+    "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396",
+  ),
+];
+
+/// Where objc2's crates go until [sdk] has read them.
+const OBJC2: &str = "objc2/";
+
+/// The folder of the SDK's frameworks, where ld64 looks for them.
+const FRAMEWORKS: &str = "System/Library/Frameworks";
+
+/// CoreFoundation's variadic functions, which objc2 leaves out and core-foundation-sys binds.
+const CF_VARIADIC: &[&str] = &[
+  "CFCalendarAddComponents",
+  "CFCalendarComposeAbsoluteTime",
+  "CFCalendarDecomposeAbsoluteTime",
+  "CFCalendarGetComponentDifference",
+  "CFStringAppendFormat",
+  "CFStringCreateWithFormat",
 ];
 
 const LIBCXX: Package = Package {
@@ -585,7 +630,7 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
         let tar = match file.rsplit('.').next() {
           Some("deb") => member(&data, "data.tar.xz").and_then(xz),
           Some("rpm") => payload(&data).and_then(xz),
-          Some("apk") => gunzip(&data),
+          Some("apk" | "crate") => gunzip(&data),
           _ => xz(&data),
         };
 
@@ -611,9 +656,10 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
   Ok(())
 }
 
-/// Adds to Zig's files of Apple's SDK libSystem's aliases, libiconv and `sys/syscall.h`, and drops
-/// `arm64e.x1` from libSystem's stub: rust-lld before Rust 1.100 can't read it. Configures libc++
-/// as its build does, and makes its `.tbd` of the lists of its exports.
+/// Adds to Zig's files of Apple's SDK libSystem's aliases, libiconv, `sys/syscall.h` and the
+/// frameworks' `.tbd`s, and drops `arm64e.x1` from libSystem's stub: rust-lld before Rust 1.100
+/// can't read it. Configures libc++ as its build does, and makes its `.tbd` of the lists of its
+/// exports.
 fn sdk(root: &Path) -> io::Result<()> {
   let lib = root.join("usr/lib");
   let path = lib.join("libSystem.tbd");
@@ -643,7 +689,9 @@ fn sdk(root: &Path) -> io::Result<()> {
 
   let [cxx, abi] = libcxx_tbds(&lists);
   fs::write(lib.join("libc++.tbd"), cxx)?;
-  fs::write(lib.join("libc++abi.tbd"), abi)
+  fs::write(lib.join("libc++abi.tbd"), abi)?;
+
+  frameworks(root)
 }
 
 /// The `.tbd`s of macOS's libc++ and libc++abi from LLVM's lists of libc++'s exports per arch:
@@ -673,6 +721,117 @@ fn libcxx_tbds(lists: &[(&str, String)]) -> [String; 2] {
   }
 
   out.map(|x| x + "...\n")
+}
+
+/// Each framework's `.tbd` from the objc2 crate that binds it: what its `extern` blocks declare.
+/// Only the names a link needs, none of Apple's files; the install name is the framework's on every
+/// macOS, where dyld finds what an umbrella's subframeworks export, as FSEvents' in CoreServices.
+fn frameworks(root: &Path) -> io::Result<()> {
+  for entry in fs::read_dir(root.join(OBJC2))? {
+    let dir = entry?.path();
+    let config = fs::read_to_string(dir.join("translation-config.toml"))?;
+    let name = config.lines().find_map(|x| x.strip_prefix("framework = \"")?.strip_suffix('"'));
+    let name = name.ok_or_else(|| bad(format!("{}: no framework", dir.display())))?;
+
+    let mut symbols = vec![];
+    for path in rs_files(&dir.join("src"))? {
+      symbols.extend(externs(&fs::read_to_string(path)?));
+    }
+
+    if name == "CoreFoundation" {
+      symbols.extend(CF_VARIADIC.iter().map(|x| x.to_string()));
+    }
+
+    let out = root.join(FRAMEWORKS).join(format!("{name}.framework"));
+    fs::create_dir_all(&out)?;
+    fs::write(out.join(format!("{name}.tbd")), framework_tbd(name, symbols))?;
+  }
+
+  fs::remove_dir_all(root.join(OBJC2))
+}
+
+/// The `.rs` files under `dir`, in its folders too.
+fn rs_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+  let mut out = vec![];
+  for entry in fs::read_dir(dir)? {
+    let path = entry?.path();
+    match path.is_dir() {
+      true => out.extend(rs_files(&path)?),
+      false if path.extension().is_some_and(|x| x == "rs") => out.push(path),
+      false => {}
+    }
+  }
+
+  Ok(out)
+}
+
+/// The C names Rust's `source` declares in its `extern "C"` blocks: each function's and static's,
+/// and each `link_name`, which may be x86_64's only.
+fn externs(source: &str) -> Vec<String> {
+  let code: Vec<_> = source.lines().map(|x| x.split("//").next().unwrap_or_default()).collect();
+  let code = code.join("\n");
+  let mut out = vec![];
+  for abi in ["extern \"C\" {", "extern \"C-unwind\" {"] {
+    for (i, _) in code.match_indices(abi) {
+      let body = &code[i + abi.len()..];
+      let mut depth = 1;
+      let end = body.find(|x| {
+        depth += match x {
+          '{' => 1,
+          '}' => -1,
+          _ => 0,
+        };
+        depth == 0
+      });
+      let body = &body[..end.unwrap_or(body.len())];
+
+      let strings = body.split('"');
+      let links = body.match_indices("link_name = \"").filter_map(|(i, x)| {
+        let rest = &body[i + x.len()..];
+        Some(rest[..rest.find('"')?].to_string())
+      });
+      out.extend(links);
+      // Words in strings, as a deprecation's note, aren't names.
+      let code: String = strings.step_by(2).collect();
+      for word in ["fn", "static"] {
+        out.extend(names(&code, word).map(str::to_string));
+      }
+    }
+  }
+
+  out
+}
+
+/// The names after each keyword `word` in `code`: `fn x` and `static mut x`, not `fn(` or
+/// `'static`.
+fn names<'a>(code: &'a str, word: &'a str) -> impl Iterator<Item = &'a str> {
+  let ident = |x: char| x.is_alphanumeric() || x == '_';
+  code.match_indices(word).filter_map(move |(i, _)| {
+    let rest = &code[i + word.len()..];
+    let before = code[..i].chars().next_back();
+    if before.is_some_and(|x| ident(x) || x == '\'') || !rest.starts_with(char::is_whitespace) {
+      return None;
+    }
+
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+    let end = rest.find(|x| !ident(x)).unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
+  })
+}
+
+/// The `.tbd` of Apple's framework `name`, which exports `symbols`, C's names, for both arches.
+fn framework_tbd(name: &str, mut symbols: Vec<String>) -> String {
+  symbols.sort();
+  symbols.dedup();
+  let symbols: Vec<_> = symbols.iter().map(|x| format!("'_{x}'")).collect();
+  let targets = "[ x86_64-macos, arm64-macos, arm64e-macos ]";
+  format!(
+    "--- !tapi-tbd\ntbd-version: 4\ntargets: {targets}\n\
+     install-name: '/{FRAMEWORKS}/{name}.framework/Versions/A/{name}'\nexports:\n\
+     \x20 - targets: {targets}\n    symbols: [ {} ]\n...\n",
+    symbols.join(", ")
+  )
 }
 
 /// The `.tbd` text `tbd` without the targets that start with `arch`, each with its comma.
@@ -735,6 +894,11 @@ pub fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+  use std::io::Write;
+
+  use flate2::Compression;
+  use flate2::write::GzEncoder;
+
   use super::*;
   use crate::toolchain::TARGETS;
   use crate::unpack::tests::{ar, tarball, temp};
@@ -749,7 +913,7 @@ mod tests {
     for pkg in every_package() {
       let hex = pkg.sha256.bytes().all(|x| x.is_ascii_digit() || (b'a'..=b'f').contains(&x));
       assert!(pkg.sha256.len() == 64 && hex, "{}", pkg.path);
-      let kinds = [".deb", ".rpm", ".apk", ".tar.xz"];
+      let kinds = [".deb", ".rpm", ".apk", ".crate", ".tar.xz"];
       assert!(kinds.iter().any(|x| pkg.path.ends_with(x)), "{}", pkg.path);
       assert!(pkg.mirrors.iter().all(|x| x.starts_with("https://") && !x.ends_with('/')));
       assert!(pkg.root.is_empty() || pkg.root.ends_with('/'));
@@ -844,8 +1008,10 @@ mod tests {
     let at = |i: usize, x: &str| format!("{}{x}", DARWIN[i].root);
     let abi = |x| format!("{{'is_defined': True, 'name': '{x}', 'type': 'FUNC'}}\n");
     let (arm, x86) = (abi("__Zarm"), abi("__Zx86"));
-    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi.
-    let files = [
+    let config = |x| format!("framework = \"{x}\"\n");
+    let (cf, sec) = (config("CoreFoundation"), config("Security"));
+    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi, objc2's.
+    let mut files = vec![
       (0, at(0, "stdio.h"), "stdio"),
       (0, at(0, "sys/types.h"), "types"),
       (0, at(0, "math.h"), "#if __has_feature(modules) && x"),
@@ -860,17 +1026,38 @@ mod tests {
       (4, at(4, "x86_64-unknown-linux-gnu.libcxxabi.v1.stable.exceptions.nonew.abilist"), "linux"),
       (5, at(5, "cxxabi.h"), "cxxabi"),
       (5, at(5, "CMakeLists.txt"), "cmake"),
+      (6, "cf-0.3.2/translation-config.toml".into(), &cf),
+      (6, "cf-0.3.2/src/generated/CFArray.rs".into(), "extern \"C\" { pub fn CFArrayCreate(); }"),
+      (9, "sec-0.3.2/translation-config.toml".into(), &sec),
+      (9, "sec-0.3.2/src/lib.rs".into(), "extern \"C\" { pub static kSecClass: u8; }"),
     ];
+    for i in [7, 8, 10] {
+      files.push((i, format!("x{i}/translation-config.toml"), "framework = \"X\"\n"));
+      files.push((i, format!("x{i}/src/lib.rs"), ""));
+    }
 
     let mirror: &str = format!("file://{}", root.display()).leak();
     let mut pkgs = vec![];
     for pkg in DARWIN {
       let mine = files.iter().filter(|(i, ..)| DARWIN[*i].path == pkg.path);
       let tar = tarball(&mine.map(|(_, x, data)| (x.as_str(), *data)).collect::<Vec<_>>(), &[]);
-      let mut xz = vec![];
-      lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
-      fs::write(root.join(pkg.path), &xz).unwrap();
-      let sha256 = hex(&hmac_sha256::Hash::hash(&xz)).leak();
+      let data = match pkg.path.ends_with(".crate") {
+        true => {
+          let mut gz = GzEncoder::new(vec![], Compression::default());
+          gz.write_all(&tar).unwrap();
+          gz.finish().unwrap()
+        }
+        false => {
+          let mut xz = vec![];
+          lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
+          xz
+        }
+      };
+
+      let path = root.join(pkg.path);
+      fs::create_dir_all(path.parent().unwrap()).unwrap();
+      fs::write(path, &data).unwrap();
+      let sha256 = hex(&hmac_sha256::Hash::hash(&data)).leak();
       pkgs.push(Package { mirrors: vec![mirror].leak(), sha256, ..*pkg });
     }
 
@@ -896,16 +1083,27 @@ mod tests {
     assert_eq!(read(&format!("{v1}cxxabi.h")), "cxxabi");
     assert!(read(&format!("{v1}__config_site")).contains("_AVAILABILITY_ANNOTATIONS 1\n"));
 
+    let cf = read("System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd");
+    let install = "'/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'";
+    assert!(cf.contains(&format!("install-name: {install}\n")));
+    assert!(cf.contains("symbols: [ '_CFArrayCreate', '_CFCalendarAddComponents', "));
+    let sec = read("System/Library/Frameworks/Security.framework/Security.tbd");
+    assert!(sec.contains("symbols: [ '_kSecClass' ]\n"));
+
     let names = |x: &str| {
       let mut out: Vec<_> =
         fs::read_dir(dir.join(x)).unwrap().map(|x| x.unwrap().file_name()).collect();
       out.sort();
       out
     };
-    assert_eq!(names(""), ["usr"]);
+    assert_eq!(names(""), ["System", "usr"]);
     assert_eq!(names("usr"), ["include", "lib"]);
     assert!(names("usr/lib").iter().all(|x| !x.to_string_lossy().ends_with(".abilist")));
     assert_eq!(names(v1), ["__assertion_handler", "__config_site", "cxxabi.h", "vector"]);
+    assert_eq!(
+      names(FRAMEWORKS),
+      ["CoreFoundation.framework", "Security.framework", "X.framework"]
+    );
     fs::remove_dir_all(root).unwrap();
   }
 
@@ -946,6 +1144,30 @@ exports:
 ...
 ";
     assert_eq!(libcxx_tbds(&[("arm64", list("__Za")), ("x86_64", list("__Zb"))]), [cxx, abi]);
+  }
+
+  #[test]
+  fn externs_takes_what_extern_blocks_declare() {
+    let source = r#"
+/// fn not_doc()
+extern "C" {
+    #[deprecated = "use fn not_note instead"]
+    pub fn CFArrayCreate(cb: Option<unsafe extern "C-unwind" fn(not_arg: i32)>);
+    pub static kCFAllocatorDefault: Option<&'static CFAllocator>;
+    static mut kMut: u8; // fn not_comment()
+}
+pub unsafe extern "C-unwind" fn not_wrapper() -> u8 {
+    extern "C-unwind" {
+        #[cfg_attr(target_arch = "x86_64", link_name = "SecKey$LEGACYMAC")]
+        fn SecKey() -> u8;
+    }
+    unsafe { SecKey() }
+}
+fn not_rust() {}
+"#;
+    let mut got = externs(source);
+    got.sort();
+    assert_eq!(got, ["CFArrayCreate", "SecKey", "SecKey$LEGACYMAC", "kCFAllocatorDefault", "kMut"]);
   }
 
   #[test]
