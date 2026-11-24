@@ -628,6 +628,10 @@ fn sdk(root: &Path) -> io::Result<()> {
     fs::write(path, SYSCALL_H)?;
   }
 
+  // clang 18 counts C++20 as modules, and math.h then takes INFINITY and NAN from clang's float.h,
+  // which has them from clang 19.
+  let path = root.join("usr/include/math.h");
+  fs::write(&path, fs::read_to_string(&path)?.replace("__has_feature(modules)", "0"))?;
   let include = root.join(LIBCXX_INCLUDE);
   fs::write(include.join("__config_site"), CONFIG_SITE)?;
   fs::rename(include.join(ASSERTION_HANDLER), include.join("__assertion_handler"))?;
@@ -844,6 +848,7 @@ mod tests {
     let files = [
       (0, at(0, "stdio.h"), "stdio"),
       (0, at(0, "sys/types.h"), "types"),
+      (0, at(0, "math.h"), "#if __has_feature(modules) && x"),
       (1, at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]"),
       // Not taken: one that the sysroot leaves out, and another libc's.
       (1, at(1, "SDKSettings.json"), "{}"),
@@ -873,6 +878,7 @@ mod tests {
     let read = |x: &str| fs::read_to_string(dir.join(x)).unwrap();
     assert_eq!(read("usr/include/stdio.h"), "stdio");
     assert_eq!(read("usr/include/sys/types.h"), "types");
+    assert_eq!(read("usr/include/math.h"), "#if 0 && x");
     assert_eq!(read("usr/lib/libSystem.tbd"), "[ arm64e-macos ]");
     assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]");
     assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");

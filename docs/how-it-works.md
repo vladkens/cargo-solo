@@ -21,7 +21,7 @@ So it sets no `RUSTFLAGS` or `CFLAGS`, which would replace yours.
 
 ## Where the files come from
 
-The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files (for macOS, from Zig's and LLVM's source tarballs, with libSystem's aliases such as `libc.tbd`, a stub of libiconv and `sys/syscall.h` without its numbers added). glibc is Debian 10's; musl Debian 13's, with 10's kernel headers and libgcc; mingw-w64 Debian 13's, with rustup's `rust-mingw`; macOS's SDK, 27's, Zig 0.17.1's source, with LLVM 20.1.8's libc++, one for both macOS targets.
+The sysroot is the target's libc, headers and libgcc, unpacked from Debian's `.deb` files (for macOS, from Zig's and LLVM's source tarballs, with libSystem's aliases such as `libc.tbd`, a stub of libiconv and `sys/syscall.h` without its numbers added, and `math.h`'s `INFINITY` and `NAN` for clang 18 in C++20, which it takes for modules). glibc is Debian 10's; musl Debian 13's, with 10's kernel headers and libgcc; mingw-w64 Debian 13's, with rustup's `rust-mingw`; macOS's SDK, 27's, Zig 0.17.1's source, with LLVM 20.1.8's libc++, one for both macOS targets.
 
 Each download is tried from the archive and then from snapshot.debian.org (Zig's from ziglang.org, then a community mirror; LLVM's from its GitHub release), and taken only with its pinned SHA-256. The cache is `~/Library/Caches/cargo-solo` on macOS, `~/.cache/cargo-solo` on Linux (`$XDG_CACHE_HOME`), `%LOCALAPPDATA%\cargo-solo` on Windows, or `CARGO_SOLO_CACHE`. cargo-solo writes nothing outside the cache and cargo's target folder.
 
