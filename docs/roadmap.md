@@ -12,12 +12,12 @@ Done:
 - [x] **Other people's projects, then 0.1.0.** Popular projects that release with cargo-zigbuild or cross, built by cargo-solo for the targets they ship, and run; then 0.1.0 on crates.io. Plan: [20261116-others.md](plans/completed/20261116-others.md).
 - [x] **The target from cargo config.** With no `--target`, the targets of `build.target` in cargo's config or `CARGO_BUILD_TARGET`, as cargo-zigbuild, cargo-xwin and zijiren233/cargo-cross do.
 - [x] **The user's `CC_<t>` wins.** `CC_<t>`, `AR_<t>` and the linker set only when the user hasn't, as cargo-zigbuild does.
+- [x] **C++ for macOS targets.** `CXX_<t>` and cmake's C++ for `-apple-darwin` on Linux and Windows hosts, linked against macOS's own `libc++.1.dylib` as Xcode links it: libc++'s headers in the SDK, configured as Apple's, and stubs of the dylibs made from LLVM's lists of their exports. Plan: [20261124-mac-cxx.md](plans/completed/20261124-mac-cxx.md).
 
 Next, in order:
 
-1. [ ] **C++ for macOS targets.** `CXX_<t>` and cmake's C++ for `-apple-darwin` on Linux and Windows hosts, linked against macOS's own `libc++.1.dylib` as Xcode links it: libc++'s headers in the SDK, configured as Apple's, and a stub of the dylib made from LLVM's lists of its exports. boring-sys, librocksdb-sys, libduckdb-sys and cxx build, and their binaries run on macOS. Plan: [20261124-mac-cxx.md](plans/20261124-mac-cxx.md).
-2. [ ] **Prefetch for Docker.** `cargo solo fetch` fetches everything a target needs, the C++ library included, and works before the sources are copied in, so that a Dockerfile caches it in a layer of its own. A Docker section in the readme.
-3. [ ] **As time allows**, each its own PR:
+1. [ ] **Prefetch for Docker.** `cargo solo fetch` fetches everything a target needs, the C++ library included, and works before the sources are copied in, so that a Dockerfile caches it in a layer of its own. A Docker section in the readme.
+2. [ ] **As time allows**, each its own PR:
    - Linux system libraries from Debian named in `Cargo.toml`, such as `libasound2-dev` for wavo-app, as cross's `pre-build` installs them with apt. Zig can't do that.
    - Other glibc versions by cargo-zigbuild's suffix, `--target x86_64-unknown-linux-gnu.2.31`, cargo given the triple without it: the versions of Debian's releases (2.31 in 11, 2.36 in 12, 2.41 in 13). rust-dist already passes zigbuild `.2.28`. Below 2.28 on request: 2.17, for CentOS 7 and manylinux2014, from CentOS 7's RPMs on vault.centos.org, real files as Debian's are, not stubs from symbol lists as Zig's.
    - New targets: armv7, tested in Docker through QEMU; `aarch64-pc-windows-gnullvm` (rustup ships `rust-mingw` for it); riscv64.
