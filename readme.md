@@ -139,17 +139,6 @@ On CI without a cache, every build is a first one: the tool fetches or compiles 
 
 The targets are `x86_64-unknown-linux-gnu` and `-musl`, then `x86_64` and `aarch64-unknown-linux-musl` with `x86_64-pc-windows-gnu`. cargo-zigbuild's next build is the fastest: Zig keeps the libc it compiled in its own cache.
 
-## 🗺️ Roadmap
-
-- `cargo solo fetch`: a target's files in a Docker layer of their own, before the sources.
-- Linux system libraries from Debian named in `Cargo.toml`, such as ALSA's.
-- Other glibc versions, each a Debian release.
-- `armv7`, `aarch64-pc-windows-gnullvm` and `riscv64`.
-
-## 🤖 How it's made
-
-cargo-solo is built with AI agents following [agents.md](agents.md): I choose what to build, review the changes and test them on real machines. Before agents, I wrote software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)).
-
 ## 🤝 Contributing
 
 Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md).
