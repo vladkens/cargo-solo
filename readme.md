@@ -91,6 +91,21 @@ jobs:
       - run: cargo solo build --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-musl --target x86_64-pc-windows-gnu
 ```
 
+## 🐳 Docker
+
+`cargo solo fetch` fetches each target's libc, libstdc++ and Rust std ahead, with no project needed, so they get a layer of their own that a change to your sources doesn't rebuild. In a project, it fetches the crates too.
+
+```dockerfile
+FROM rust:1-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends clang cmake
+RUN cargo install --locked cargo-solo
+ENV CARGO_SOLO_CACHE=/opt/cargo-solo
+RUN cargo solo fetch --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
+WORKDIR /src
+COPY . .
+RUN cargo solo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
+```
+
 ## 🆚 Compared
 
 The usual ways to cross-compile, and what each costs:
