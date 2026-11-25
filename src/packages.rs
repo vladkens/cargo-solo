@@ -2,6 +2,7 @@
 //! The sysroots: each target's packages from the distros, rustup, Zig, LLVM and crates.io, pinned
 //! by SHA-256, fetched by the system's `curl` on first use and unpacked into the cache.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -117,7 +118,8 @@ impl Package {
     }
   }
 
-  /// A crate of objc2's that binds an Apple framework, unpacked into [OBJC2] for [sdk].
+  /// A crate of objc2's that binds an Apple framework, or objc2's own, unpacked into [OBJC2] for
+  /// [sdk].
   const fn objc2(path: &'static str, sha256: &'static str) -> Package {
     Package { mirrors: CRATES_IO, path, sha256, root: "", keep: &[""], into: OBJC2 }
   }
@@ -269,7 +271,8 @@ pub const MINGW_X64: &[Package] = &[
 /// Apple's SDK for both arches, laid out as Xcode's: from Zig's source, macOS's headers and
 /// libSystem's `.tbd`, the stub a link needs, not Zig's `SDKSettings.json`, which clang warns of;
 /// from LLVM's, libc++ 20's (Zig's 22 needs clang 20) headers and its exports, for [sdk]'s `.tbd`.
-/// From objc2's crates, Rust's bindings, what the frameworks common crates link export, for [sdk].
+/// From objc2's crates, Rust's bindings, what libobjc and the frameworks common crates link
+/// export, for [sdk].
 pub const DARWIN: &[Package] = &[
   Package::zig("zig-0.17.1/lib/libc/include/any-darwin-any/", &[""], "usr/include/"),
   Package::zig("zig-0.17.1/lib/libc/darwin/", &["libSystem.tbd"], "usr/lib/"),
@@ -282,6 +285,10 @@ pub const DARWIN: &[Package] = &[
     LIBCXX_INCLUDE,
   ),
   Package::objc2(
+    "objc2/objc2-0.6.3.crate",
+    "b7c2599ce0ec54857b29ce62166b0ed9b4f6f1a70ccc9a71165b6154caca8c05",
+  ),
+  Package::objc2(
     "objc2-core-foundation/objc2-core-foundation-0.3.2.crate",
     "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
   ),
@@ -290,8 +297,16 @@ pub const DARWIN: &[Package] = &[
     "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b",
   ),
   Package::objc2(
+    "objc2-foundation/objc2-foundation-0.3.2.crate",
+    "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+  ),
+  Package::objc2(
     "objc2-io-kit/objc2-io-kit-0.3.2.crate",
     "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15",
+  ),
+  Package::objc2(
+    "objc2-open-directory/objc2-open-directory-0.3.2.crate",
+    "bb82bed227edf5201dfedf072bba4015a33d3d4a98519837295a90f0a23f676d",
   ),
   Package::objc2(
     "objc2-security/objc2-security-0.3.2.crate",
@@ -317,6 +332,15 @@ const CF_VARIADIC: &[&str] = &[
   "CFCalendarGetComponentDifference",
   "CFStringAppendFormat",
   "CFStringCreateWithFormat",
+];
+
+/// IOKit's private functions, which objc2 leaves out and sysinfo binds for Apple silicon's
+/// temperatures.
+const IOKIT_PRIVATE: &[&str] = &[
+  "IOHIDEventGetFloatValue",
+  "IOHIDEventSystemClientCreate",
+  "IOHIDEventSystemClientSetMatching",
+  "IOHIDServiceClientCopyEvent",
 ];
 
 const LIBCXX: Package = Package {
@@ -656,10 +680,10 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
   Ok(())
 }
 
-/// Adds to Zig's files of Apple's SDK libSystem's aliases, libiconv, `sys/syscall.h` and the
-/// frameworks' `.tbd`s, and drops `arm64e.x1` from libSystem's stub: rust-lld before Rust 1.100
-/// can't read it. Configures libc++ as its build does, and makes its `.tbd` of the lists of its
-/// exports.
+/// Adds to Zig's files of Apple's SDK libSystem's aliases, libiconv, `sys/syscall.h` and libobjc's
+/// and the frameworks' `.tbd`s, and drops `arm64e.x1` from libSystem's stub: rust-lld before Rust
+/// 1.100 can't read it. Configures libc++ as its build does, and makes its `.tbd` of the lists of
+/// its exports.
 fn sdk(root: &Path) -> io::Result<()> {
   let lib = root.join("usr/lib");
   let path = lib.join("libSystem.tbd");
@@ -727,37 +751,56 @@ fn libcxx_tbds(lists: &[(&str, String)]) -> [String; 2] {
 /// Only the names a link needs, none of Apple's files; the install name is the framework's on every
 /// macOS, where dyld finds what an umbrella's subframeworks export, as FSEvents' in CoreServices.
 fn frameworks(root: &Path) -> io::Result<()> {
+  // A name libSystem exports stays its: a stub that lists it too, as objc2 binds `free`, would bind
+  // it there, where dyld doesn't find it.
+  let system = fs::read_to_string(root.join("usr/lib/libSystem.tbd"))?;
+  let system: HashSet<_> = system.split([' ', ',', '\n', '[', ']', '\'']).collect();
   for entry in fs::read_dir(root.join(OBJC2))? {
     let dir = entry?.path();
     let config = fs::read_to_string(dir.join("translation-config.toml"))?;
     let name = config.lines().find_map(|x| x.strip_prefix("framework = \"")?.strip_suffix('"'));
     let name = name.ok_or_else(|| bad(format!("{}: no framework", dir.display())))?;
 
-    let mut symbols = vec![];
-    for path in rs_files(&dir.join("src"))? {
-      symbols.extend(externs(&fs::read_to_string(path)?));
-    }
+    // objc2's own crate binds libobjc, Objective-C's runtime, in its `ffi`. Foundation's only
+    // version is C, as AppKit's; every other framework's, A.
+    let framework = format!("{FRAMEWORKS}/{name}.framework");
+    let version = if name == "Foundation" { "C" } else { "A" };
+    let (path, install, src) = match name {
+      "ObjectiveC" => ("usr/lib/libobjc.tbd".into(), "/usr/lib/libobjc.A.dylib".into(), "src/ffi"),
+      _ => (
+        format!("{framework}/{name}.tbd"),
+        format!("/{framework}/Versions/{version}/{name}"),
+        "src",
+      ),
+    };
 
-    if name == "CoreFoundation" {
-      symbols.extend(CF_VARIADIC.iter().map(|x| x.to_string()));
-    }
+    let mut symbols = externs_in(&dir.join(src))?;
+    let extra = match name {
+      "CoreFoundation" => CF_VARIADIC,
+      "IOKit" => IOKIT_PRIVATE,
+      _ => &[],
+    };
 
-    let out = root.join(FRAMEWORKS).join(format!("{name}.framework"));
-    fs::create_dir_all(&out)?;
-    fs::write(out.join(format!("{name}.tbd")), framework_tbd(name, symbols))?;
+    symbols.extend(extra.iter().map(|x| x.to_string()));
+    symbols.retain(|x| !system.contains(format!("_{x}").as_str()));
+    let path = root.join(path);
+    fs::create_dir_all(path.parent().unwrap_or(root))?;
+    fs::write(path, tbd(&install, symbols))?;
   }
 
   fs::remove_dir_all(root.join(OBJC2))
 }
 
-/// The `.rs` files under `dir`, in its folders too.
-fn rs_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+/// What the `.rs` files under `dir`, in its folders too, declare: their [externs].
+fn externs_in(dir: &Path) -> io::Result<Vec<String>> {
   let mut out = vec![];
   for entry in fs::read_dir(dir)? {
     let path = entry?.path();
     match path.is_dir() {
-      true => out.extend(rs_files(&path)?),
-      false if path.extension().is_some_and(|x| x == "rs") => out.push(path),
+      true => out.extend(externs_in(&path)?),
+      false if path.extension().is_some_and(|x| x == "rs") => {
+        out.extend(externs(&fs::read_to_string(path)?))
+      }
       false => {}
     }
   }
@@ -765,13 +808,13 @@ fn rs_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
   Ok(out)
 }
 
-/// The C names Rust's `source` declares in its `extern "C"` blocks: each function's and static's,
-/// and each `link_name`, which may be x86_64's only.
+/// The C names Rust's `source` declares in its `extern "C"` blocks, or objc2's macros of them: each
+/// function's and static's, and each `link_name`, which may be x86_64's only.
 fn externs(source: &str) -> Vec<String> {
   let code: Vec<_> = source.lines().map(|x| x.split("//").next().unwrap_or_default()).collect();
   let code = code.join("\n");
   let mut out = vec![];
-  for abi in ["extern \"C\" {", "extern \"C-unwind\" {"] {
+  for abi in ["extern \"C\" {", "extern \"C-unwind\" {", "extern_c! {", "extern_c_unwind! {"] {
     for (i, _) in code.match_indices(abi) {
       let body = &code[i + abi.len()..];
       let mut depth = 1;
@@ -820,15 +863,16 @@ fn names<'a>(code: &'a str, word: &'a str) -> impl Iterator<Item = &'a str> {
   })
 }
 
-/// The `.tbd` of Apple's framework `name`, which exports `symbols`, C's names, for both arches.
-fn framework_tbd(name: &str, mut symbols: Vec<String>) -> String {
+/// The `.tbd` of the library at `install` on macOS, which exports `symbols`, C's names, for both
+/// arches.
+fn tbd(install: &str, mut symbols: Vec<String>) -> String {
   symbols.sort();
   symbols.dedup();
   let symbols: Vec<_> = symbols.iter().map(|x| format!("'_{x}'")).collect();
   let targets = "[ x86_64-macos, arm64-macos, arm64e-macos ]";
   format!(
     "--- !tapi-tbd\ntbd-version: 4\ntargets: {targets}\n\
-     install-name: '/{FRAMEWORKS}/{name}.framework/Versions/A/{name}'\nexports:\n\
+     install-name: '{install}'\nexports:\n\
      \x20 - targets: {targets}\n    symbols: [ {} ]\n...\n",
     symbols.join(", ")
   )
@@ -1015,7 +1059,7 @@ mod tests {
       (0, at(0, "stdio.h"), "stdio"),
       (0, at(0, "sys/types.h"), "types"),
       (0, at(0, "math.h"), "#if __has_feature(modules) && x"),
-      (1, at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]"),
+      (1, at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]\n[ _free ]"),
       // Not taken: one that the sysroot leaves out, and another libc's.
       (1, at(1, "SDKSettings.json"), "{}"),
       (1, DARWIN[1].root.replace("/darwin/", "/glibc/") + "stdio.h", "glibc"),
@@ -1026,12 +1070,15 @@ mod tests {
       (4, at(4, "x86_64-unknown-linux-gnu.libcxxabi.v1.stable.exceptions.nonew.abilist"), "linux"),
       (5, at(5, "cxxabi.h"), "cxxabi"),
       (5, at(5, "CMakeLists.txt"), "cmake"),
-      (6, "cf-0.3.2/translation-config.toml".into(), &cf),
-      (6, "cf-0.3.2/src/generated/CFArray.rs".into(), "extern \"C\" { pub fn CFArrayCreate(); }"),
-      (9, "sec-0.3.2/translation-config.toml".into(), &sec),
-      (9, "sec-0.3.2/src/lib.rs".into(), "extern \"C\" { pub static kSecClass: u8; }"),
+      (6, "objc2-0.6.3/translation-config.toml".into(), "framework = \"ObjectiveC\"\n"),
+      (6, "objc2-0.6.3/src/ffi/rc.rs".into(), "extern_c! { pub fn objc_retain(); pub fn free(); }"),
+      (6, "objc2-0.6.3/src/lib.rs".into(), "extern \"C\" { pub fn not_ffi(); }"),
+      (7, "cf-0.3.2/translation-config.toml".into(), &cf),
+      (7, "cf-0.3.2/src/generated/CFArray.rs".into(), "extern \"C\" { pub fn CFArrayCreate(); }"),
+      (12, "sec-0.3.2/translation-config.toml".into(), &sec),
+      (12, "sec-0.3.2/src/lib.rs".into(), "extern \"C\" { pub static kSecClass: u8; }"),
     ];
-    for i in [7, 8, 10] {
+    for i in [8, 9, 10, 11, 13] {
       files.push((i, format!("x{i}/translation-config.toml"), "framework = \"X\"\n"));
       files.push((i, format!("x{i}/src/lib.rs"), ""));
     }
@@ -1066,9 +1113,9 @@ mod tests {
     assert_eq!(read("usr/include/stdio.h"), "stdio");
     assert_eq!(read("usr/include/sys/types.h"), "types");
     assert_eq!(read("usr/include/math.h"), "#if 0 && x");
-    assert_eq!(read("usr/lib/libSystem.tbd"), "[ arm64e-macos ]");
-    assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]");
-    assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");
+    assert_eq!(read("usr/lib/libSystem.tbd"), "[ arm64e-macos ]\n[ _free ]");
+    assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]\n[ _free ]");
+    assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]\n[ _free ]");
     assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
     assert!(read("usr/include/sys/syscall.h").contains("_SYS_SYSCALL_H_"));
 
@@ -1089,6 +1136,9 @@ mod tests {
     assert!(cf.contains("symbols: [ '_CFArrayCreate', '_CFCalendarAddComponents', "));
     let sec = read("System/Library/Frameworks/Security.framework/Security.tbd");
     assert!(sec.contains("symbols: [ '_kSecClass' ]\n"));
+    let objc = read("usr/lib/libobjc.tbd");
+    assert!(objc.contains("install-name: '/usr/lib/libobjc.A.dylib'\n"));
+    assert!(objc.contains("symbols: [ '_objc_retain' ]\n"));
 
     let names = |x: &str| {
       let mut out: Vec<_> =

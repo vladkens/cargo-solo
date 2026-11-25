@@ -58,12 +58,12 @@ Without `--target`, it sets up the targets of `build.target` in cargo's config, 
 | `x86_64-unknown-linux-musl` | musl 1.2.5 | 4.4 MB | 13 MB |
 | `aarch64-unknown-linux-musl` | musl 1.2.5 | 2.9 MB | 10 MB |
 | `x86_64-pc-windows-gnu` | mingw-w64 12 | 16 MB | 210 MB |
-| `aarch64-apple-darwin` | libSystem, libc++ | 29 MB | 19 MB |
+| `aarch64-apple-darwin` | libSystem, libc++ | 30 MB | 19 MB |
 | `x86_64-apple-darwin` | libSystem, libc++ | the same | the same |
 
 On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
 
-macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it. Rust links the frameworks common crates use: CoreFoundation, Security, SystemConfiguration, IOKit and CoreServices, for chrono, native-tls, reqwest, sysinfo and notify. C that includes a framework's headers, as curl-sys and rdkafka-sys do, and any other framework fail: for those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
+macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it. Rust links the frameworks common crates use: CoreFoundation, Foundation, Security, SystemConfiguration, IOKit, OpenDirectory and CoreServices, with libobjc, for chrono, native-tls, reqwest, sysinfo and notify. C that includes a framework's headers, as curl-sys and rdkafka-sys do, and any other framework fail: for those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
 
 ## ⚙️ How it works
 
