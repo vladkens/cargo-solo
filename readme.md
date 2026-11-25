@@ -21,8 +21,8 @@
 - 🎯 **Linux (glibc, musl), Windows and macOS**, from any of them
 - 🧱 **C and C++ dependencies**: `ring`, `aws-lc-rs`, SQLite, crates built with cmake
 - 🐧 **glibc 2.28**: the binary runs on Debian 10, RHEL 8 and newer
-- 🪶 **3 to 23 MB per target**, fetched once: no Zig, no Docker image
-- 🔐 **Nothing of ours hosted**: the distros' and Zig's own files, pinned by SHA-256
+- 🪶 **3 to 28 MB per target**, fetched once: no Zig, no Docker image
+- 🔐 **Nothing of ours hosted**: the distros', Zig's and LLVM's own files, pinned by SHA-256
 - 🧰 **Your flags stay yours**: `RUSTFLAGS` and `CFLAGS` work as without it
 
 ## ⚡ Quick start
@@ -58,12 +58,12 @@ Without `--target`, it sets up the targets of `build.target` in cargo's config, 
 | `x86_64-unknown-linux-musl` | musl 1.2.5 | 4.4 MB | 13 MB |
 | `aarch64-unknown-linux-musl` | musl 1.2.5 | 2.9 MB | 10 MB |
 | `x86_64-pc-windows-gnu` | mingw-w64 12 | 16 MB | 210 MB |
-| `aarch64-apple-darwin` | libSystem | 23 MB | 8 MB |
-| `x86_64-apple-darwin` | libSystem | the same | the same |
+| `aarch64-apple-darwin` | libSystem, libc++ | 28 MB | 19 MB |
+| `x86_64-apple-darwin` | libSystem, libc++ | the same | the same |
 
 On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
 
-macOS targets, built on Linux or Windows, get Rust and C but no C++ and no Apple frameworks: a crate that links one, such as `security-framework`, fails. For those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64.
+macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it, but no Apple frameworks: a crate that links one, such as `security-framework`, fails. For those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
 
 ## ⚙️ How it works
 
@@ -121,10 +121,10 @@ The usual ways to cross-compile, and what each costs:
 | glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
 | musl, Windows gnu | ✅ | ✅ | ✅ |
 | On Apple silicon | native | native | x86_64, emulated |
-| Apple targets | ➖ no frameworks | ➖ no frameworks | ➖ your own image |
-| C++, cmake | ✅ but for macOS | ✅ | ✅ |
+| Apple targets | ➖ no frameworks | ➖ frameworks in its Docker image | ➖ your own image |
+| C++, cmake | ✅ | ✅ | ✅ |
 
-Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), C++ for macOS (cargo-zigbuild), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
+Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
 
 ### First build
 
@@ -141,9 +141,10 @@ The targets are `x86_64-unknown-linux-gnu` and `-musl`, then `x86_64` and `aarch
 
 ## 🗺️ Roadmap
 
+- `cargo solo fetch`: a target's files in a Docker layer of their own, before the sources.
+- Linux system libraries from Debian named in `Cargo.toml`, such as ALSA's.
 - Other glibc versions, each a Debian release.
-- More Debian `-dev` packages in a sysroot, such as ALSA's.
-- `aarch64-pc-windows-gnullvm`, i686, armv7 and riscv64.
+- `armv7`, `aarch64-pc-windows-gnullvm` and `riscv64`.
 
 ## 🤖 How it's made
 

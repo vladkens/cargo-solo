@@ -18,6 +18,9 @@ pub const GCC_LD: &str = "CARGO_SOLO_GCC_LD";
 /// Apple's SDK, which build scripts read, and the wrapper: cargo-solo's, or the user's, with its
 /// frameworks.
 pub const SDKROOT: &str = "SDKROOT";
+/// The oldest macOS an Apple binary runs on, which rustc, cc-rs and the wrapper read: without it,
+/// cc-rs off a Mac passes 10.7 for x86_64.
+pub const DEPLOYMENT_TARGET: &str = "MACOSX_DEPLOYMENT_TARGET";
 
 // MARK: Targets
 
@@ -28,7 +31,7 @@ pub struct Target {
   pub clang: &'static str,
   pub libc: Libc,
   pub packages: &'static [Package],
-  /// Its libstdc++, but for Apple's: C only.
+  /// Its libstdc++; Apple's libc++ is in its SDK, as Xcode's.
   pub cxx: Option<&'static Cxx>,
 }
 
@@ -166,6 +169,20 @@ impl Target {
     flags.join(" ").into()
   }
 
+  /// Apple's `-mmacosx-version-min` for `args`: the last of theirs, else `var`, at least the arch's
+  /// first macOS. clang takes the last; with none, Linux's clang takes 10.4, not the variable; and
+  /// it raises arm64's 10.12 only for the link, not for libc++'s headers.
+  fn macos(&self, args: &[OsString], var: Option<&OsStr>) -> OsString {
+    let words = words(args);
+    let flag = words.iter().rev().find_map(|x| {
+      x.strip_prefix("-mmacosx-version-min=").or(x.strip_prefix("-mmacos-version-min="))
+    });
+    let first = if self.clang.starts_with("arm64") { "11.0" } else { "10.12" };
+    let ver = flag.or(var.and_then(OsStr::to_str)).unwrap_or(first);
+    let ver = if version(ver) < version(first) { first } else { ver };
+    format!("-mmacosx-version-min={ver}").into()
+  }
+
   /// The flags the wrapper puts after clang's `args`, so that they win over the `--target` cc-rs
   /// passes: the target and the sysroot at `dir`, and to link, rustup's lld from `gcc_ld`, which
   /// clang runs as `ld64.lld` for Apple's targets.
@@ -221,10 +238,15 @@ impl Target {
 
   /// The wrapper's C++ flags after [flags](Target::flags), libstdc++ at `dir`: as clang++ (`cxx`),
   /// g++'s driver, headers and what g++ links; as clang, only the folder, for rustc's link of a
-  /// crate's C++, which names `-lstdc++`.
+  /// crate's C++, which names `-lstdc++`. Apple's `dir` is the SDK, with libc++.
   pub fn cxx_flags(&self, dir: &Path, cxx: bool, args: &[OsString]) -> Vec<OsString> {
     let Some(lib) = self.cxx else {
-      return vec![];
+      // clang takes the headers beside it first, as a Linux distro's libc++'s.
+      let include = dir.join(packages::LIBCXX_INCLUDE);
+      return match cxx {
+        true => vec!["--driver-mode=g++".into(), "-stdlib++-isystem".into(), include.into()],
+        false => vec![],
+      };
     };
 
     let mut out = vec![];
@@ -356,16 +378,32 @@ const CMAKE_BUILD: &str = r#"if(DEFINED ENV{OUT_DIR})
 endif()
 "#;
 
+/// A version such as macOS's `10.12`, to compare: `[10, 12]`.
+pub fn version(text: &str) -> Vec<u32> {
+  text.split('.').map(|x| x.parse().unwrap_or(0)).collect()
+}
+
 fn compiles(args: &[OsString]) -> bool {
   args.iter().any(|x| ["-c", "-E", "-S", "-M", "-MM"].iter().any(|f| x == f))
 }
 
-/// Whether `args` name `-lstdc++`, or a response file of rustc's does, one per line.
+/// The words of `args`, each response file's, `@path`, in its place, as rustc's and ninja's: split
+/// on whitespace, quotes dropped, which keeps a flag whole.
+fn words(args: &[OsString]) -> Vec<String> {
+  let mut out = vec![];
+  for x in args.iter().filter_map(|x| x.to_str()) {
+    match x.strip_prefix('@').and_then(|x| fs::read_to_string(x).ok()) {
+      Some(text) => out.extend(text.split_whitespace().map(|x| x.trim_matches(['"', '\'']).into())),
+      None => out.push(x.into()),
+    }
+  }
+
+  out
+}
+
+/// Whether `args` name `-lstdc++`, or a response file of rustc's does.
 fn links_stdcxx(args: &[OsString]) -> bool {
-  let file = |x: &OsStr| x.to_str()?.strip_prefix('@').and_then(|x| fs::read_to_string(x).ok());
-  args
-    .iter()
-    .any(|x| x == "-lstdc++" || file(x).is_some_and(|x| x.lines().any(|x| x.trim() == "-lstdc++")))
+  words(args).iter().any(|x| x == "-lstdc++")
 }
 
 fn cat(flag: &str, path: &Path) -> OsString {
@@ -406,9 +444,16 @@ pub fn wrap(target: &Target, cxx: bool, args: Vec<OsString>) -> io::Result<Comma
   };
 
   let mut flags = target.flags(&dir, Path::new(&gcc_ld), &args);
+  if target.libc == Libc::Darwin {
+    flags.push(target.macos(&args, env::var_os(DEPLOYMENT_TARGET).as_deref()));
+  }
+
   if cxx || links_stdcxx(&args) {
-    let lib = target.cxx.ok_or_else(|| bad(format!("no C++ for {}: only C", target.rust)))?;
-    let dir = packages::ensure(&cache, &target.libstdcxx(), lib.packages)?;
+    let dir = match target.cxx {
+      Some(lib) => packages::ensure(&cache, &target.libstdcxx(), lib.packages)?,
+      None => dir,
+    };
+
     flags.extend(target.cxx_flags(&dir, cxx, &args));
   }
 
@@ -524,6 +569,33 @@ mod tests {
   }
 
   #[test]
+  fn macos_is_the_last_version_at_least_the_arch_s_first() {
+    let macos = |name, line: &str, var: Option<&str>| {
+      let target = TARGETS.iter().find(|x| x.rust == name).unwrap();
+      let flag = target.macos(&args(line), var.map(OsStr::new)).into_string().unwrap();
+      flag.strip_prefix("-mmacosx-version-min=").unwrap().to_string()
+    };
+
+    let (arm, x64) = ("aarch64-apple-darwin", "x86_64-apple-darwin");
+    // cc-rs's, then the user's in CFLAGS.
+    let cc = "--target=x86_64-apple-macosx -mmacosx-version-min=10.12 -c a.c";
+    assert_eq!(macos(x64, cc, Some("10.15")), "10.12");
+    assert_eq!(macos(arm, cc, Some("10.12")), "11.0");
+    assert_eq!(macos(arm, &format!("{cc} -mmacos-version-min=13.3"), None), "13.3");
+    assert_eq!(macos(x64, "-c a.c", Some("10.15")), "10.15");
+    assert_eq!(macos(arm, "-c a.c", Some("10.12")), "11.0");
+    assert_eq!(macos(arm, "-c a.c", Some("14")), "14");
+    assert_eq!(macos(x64, "-c a.c", None), "10.12");
+
+    // ninja's response file, as cmake writes it.
+    let file = env::temp_dir().join(format!("cargo-solo-macos-{}", std::process::id()));
+    fs::write(&file, "\"-mmacosx-version-min=13.3\" -c a.cc").unwrap();
+    let line = format!("-mmacosx-version-min=10.12 @{}", file.display());
+    assert_eq!(macos(x64, &line, Some("10.12")), "13.3");
+    fs::remove_file(file).unwrap();
+  }
+
+  #[test]
   fn bindgen_and_pkg_config_take_the_target_s_sysroot() {
     let dir = Path::new("/c/sr");
     let target = |name| TARGETS.iter().find(|x| x.rust == name).unwrap();
@@ -557,7 +629,7 @@ mod tests {
       apple.iter().all(|x| x.sysroot() == "macos" && x.here() == (env::consts::OS != "macos"))
     );
     assert_eq!(Target::find("x86_64-unknown-linux-gnu").unwrap().sysroot(), "x86_64-linux-gnu");
-    // C only for Apple's.
+    // Apple's libc++ is the SDK's.
     assert!(TARGETS.iter().all(|x| x.cxx.is_none() == (x.libc == Libc::Darwin)));
   }
 
@@ -565,7 +637,7 @@ mod tests {
   fn cxx_flags_are_g_plus_plus_s() {
     let dir = Path::new("/c/cxx");
     let flags = |name, cxx, line| {
-      let target = Target::find(name).unwrap();
+      let target = TARGETS.iter().find(|x| x.rust == name).unwrap();
       let got = target.cxx_flags(dir, cxx, &args(line));
       got.iter().map(|x| x.to_str().unwrap().replace('\\', "/")).collect::<Vec<_>>().join(" ")
     };
@@ -591,6 +663,13 @@ mod tests {
     let mingw = flags("x86_64-pc-windows-gnu", true, "a.o -o a.exe");
     assert!(mingw.contains("/c/cxx/14-posix/include/c++/x86_64-w64-mingw32 "));
     assert!(mingw.ends_with(" -femulated-tls -L/c/cxx/14-posix -static-libgcc"));
+
+    // The SDK's libc++, which clang++ links itself, as rustc does with cc's -lc++.
+    let mac = "x86_64-apple-darwin";
+    let headers = "--driver-mode=g++ -stdlib++-isystem /c/cxx/usr/include/c++/v1/";
+    assert_eq!(flags(mac, true, "-c a.cc"), headers);
+    assert_eq!(flags(mac, true, "a.o -o a"), headers);
+    assert_eq!(flags(mac, false, "a.o -lc++ -o a"), "");
   }
 
   #[test]

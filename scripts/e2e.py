@@ -3,8 +3,7 @@
 # requires-python = ">=3.11"
 # ///
 """The end-to-end test: the test crates, tests/hello (C through cc and cmake) and tests/cxx (C++
-through both), built by cargo-solo for every target it sets up (tests/cxx but for Apple's: C
-only), then run in each target's OS.
+through both), built by cargo-solo for every target it sets up, then run in each target's OS.
 
 uv run scripts/e2e.py build <dir>   every target's binaries, <dir>/<target>/<name>[.exe], checked
 uv run scripts/e2e.py run <dir>     each binary under <dir> this host can run, its output checked
@@ -141,18 +140,17 @@ def build(out: Path) -> None:
 
     builds = []
     for crate, (name, _, extra) in CRATES.items():
-        ours = [t for t in targets if crate != "cxx" or "-apple-" not in t]
-        args = [x for t in ours for x in ("--target", t)]
+        args = [x for t in targets for x in ("--target", t)]
         dest = ROOT / "target" / crate
         # --keep-going: every target that fails, not only the first
         cmd = [solo, "solo", "build", "--keep-going", "--target-dir", dest, *args, *extra]
         proc = start(*cmd, "--profile", "release" if FULL else "dev", cwd=ROOT / "tests" / crate)
-        builds.append((name, ours, dest, proc))
+        builds.append((name, dest, proc))
 
     wait(*(proc for *_, proc in builds))
     tool = readobj()
-    for name, ours, dest, _ in builds:
-        for target in ours:
+    for name, dest, _ in builds:
+        for target in targets:
             file = f"{name}.exe" if "-windows-" in target else name
             (out / target).mkdir(parents=True, exist_ok=True)
             path = shutil.copy2(dest / target / PROFILE / file, out / target / file)

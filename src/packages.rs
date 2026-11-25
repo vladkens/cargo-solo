@@ -1,5 +1,5 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-//! The sysroots: each target's packages from the distros, rustup and Zig, pinned by SHA-256,
+//! The sysroots: each target's packages from the distros, rustup, Zig and LLVM, pinned by SHA-256,
 //! fetched by the system's `curl` on first use and unpacked into the cache.
 
 use std::path::{Path, PathBuf};
@@ -31,12 +31,12 @@ impl Libc {
       Libc::Glibc => "glibc 2.28",
       Libc::Musl => "musl 1.2.5",
       Libc::Mingw => "mingw-w64 12.0",
-      Libc::Darwin => "libSystem, SDK 27.0",
+      Libc::Darwin => "libSystem, SDK 27.0, libc++ 20",
     }
   }
 }
 
-/// A file of a distro or rustup, tried from each mirror in turn: the SHA-256 decides.
+/// A file of a distro, rustup, Zig or LLVM, tried from each mirror in turn: the SHA-256 decides.
 #[derive(Debug)]
 pub struct Package {
   pub mirrors: &'static [&'static str],
@@ -76,6 +76,9 @@ const RUSTUP: &[&str] = &["https://static.rust-lang.org"];
 
 /// Zig's releases on ziglang.org, and a community mirror Zig lists, which serves the same files.
 const ZIG: &[&str] = &["https://ziglang.org/download/0.17.1", "https://pkg.hexops.org/zig"];
+
+/// LLVM 20.1.8's release on GitHub, the sources of each of its projects.
+const LLVM: &[&str] = &["https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8"];
 
 /// AlmaLinux 8.10's AppStream, RHEL 8's rebuilt, and kernel.org's copy: 8's last release, whose
 /// packages stay until 8's end in 2029.
@@ -123,8 +126,10 @@ impl Package {
   /// Where `path`, a file of its archive, goes in the sysroot; `None` when it's not kept.
   pub fn place(&self, path: &str) -> Option<PathBuf> {
     let rest = path.strip_prefix(self.root)?;
-    // glibc's charset modules, loaded at run time only: 7 of its 12 MB.
-    if !self.keep.iter().any(|x| rest.starts_with(x)) || rest.contains("/gconv/") {
+    // glibc's charset modules, loaded at run time only: 7 of its 12 MB; libc++'s frozen C++03
+    // headers, which only a define of the user's takes: 9 of its 19 MB.
+    let unused = rest.contains("/gconv/") || rest.starts_with("__cxx03/");
+    if !self.keep.iter().any(|x| rest.starts_with(x)) || unused {
       return None;
     }
 
@@ -253,13 +258,83 @@ pub const MINGW_X64: &[Package] = &[
   },
 ];
 
-/// Apple's SDK for both arches, laid out as Xcode's is, from Zig's source: macOS's headers, and
-/// libSystem's `.tbd`, the text stub that lists what it exports, which is all a link needs. Not
-/// Zig's `SDKSettings.json`, which clang warns of on every file: it lacks a key clang requires.
+/// Apple's SDK for both arches, laid out as Xcode's: from Zig's source, macOS's headers and
+/// libSystem's `.tbd`, the stub a link needs, not Zig's `SDKSettings.json`, which clang warns of;
+/// from LLVM's, libc++ 20's (Zig's 22 needs clang 20) headers and its exports, for [sdk]'s `.tbd`.
 pub const DARWIN: &[Package] = &[
   Package::zig("zig-0.17.1/lib/libc/include/any-darwin-any/", &[""], "usr/include/"),
   Package::zig("zig-0.17.1/lib/libc/darwin/", &["libSystem.tbd"], "usr/lib/"),
+  LIBCXX.only("libcxx-20.1.8.src/include/", &[""], LIBCXX_INCLUDE),
+  LIBCXX.only("libcxx-20.1.8.src/vendor/llvm/", &[ASSERTION_HANDLER], LIBCXX_INCLUDE),
+  LIBCXX.only("libcxx-20.1.8.src/lib/abi/", &[ABI_LISTS[0].1, ABI_LISTS[1].1], "usr/lib/"),
+  LIBCXXABI.only(
+    "libcxxabi-20.1.8.src/include/",
+    &["__cxxabi_config.h", "cxxabi.h"],
+    LIBCXX_INCLUDE,
+  ),
 ];
+
+const LIBCXX: Package = Package {
+  mirrors: LLVM,
+  path: "libcxx-20.1.8.src.tar.xz",
+  sha256: "3e12992e3d1a0e648dc2e1c8c6b1dd31717ac8e684a25a302773667f47f75546",
+  root: "",
+  keep: &[],
+  into: "",
+};
+
+/// libc++abi's headers, which libc++'s include.
+const LIBCXXABI: Package = Package {
+  path: "libcxxabi-20.1.8.src.tar.xz",
+  sha256: "b4f6d3f9c802ea9e5db260e3e13177f63e8f8feef48618a8d53d4f7d4fcbb07f",
+  ..LIBCXX
+};
+
+/// The SDK's folder of libc++'s headers, where clang looks for them in an SDK.
+pub const LIBCXX_INCLUDE: &str = "usr/include/c++/v1/";
+
+/// What libc++ calls on a failed check of its hardening, `__assertion_handler` once installed.
+const ASSERTION_HANDLER: &str = "default_assertion_handler.in";
+
+/// LLVM's lists of what macOS's libc++ exports for each arch, as a `.tbd` names it: its own, and
+/// libc++abi's, which it re-exports.
+const ABI_LISTS: [(&str, &str); 2] = [
+  ("arm64", "arm64-apple-darwin.libcxxabi.v1.stable.exceptions.nonew.abilist"),
+  ("x86_64", "x86_64-apple-darwin.libcxxabi.v1.stable.exceptions.nonew.abilist"),
+];
+
+/// libc++'s configuration as Apple's (`libcxx/cmake/caches/Apple.cmake`), whose availability marks
+/// fail what the deployment target's libc++ lacks, as Xcode's; with no tzdb or libdispatch, which
+/// the lists of its exports lack.
+const CONFIG_SITE: &str = "/* cargo-solo's: libc++'s configuration, as Apple's. */
+#ifndef _LIBCPP___CONFIG_SITE
+#define _LIBCPP___CONFIG_SITE
+
+#define _LIBCPP_ABI_VERSION 1
+#define _LIBCPP_ABI_NAMESPACE __1
+#define _LIBCPP_ABI_FORCE_ITANIUM 0
+#define _LIBCPP_ABI_FORCE_MICROSOFT 0
+#define _LIBCPP_HAS_THREADS 1
+#define _LIBCPP_HAS_MONOTONIC_CLOCK 1
+#define _LIBCPP_HAS_TERMINAL 1
+#define _LIBCPP_HAS_MUSL_LIBC 0
+#define _LIBCPP_HAS_THREAD_API_PTHREAD 1
+#define _LIBCPP_HAS_THREAD_API_EXTERNAL 0
+#define _LIBCPP_HAS_THREAD_API_WIN32 0
+#define _LIBCPP_HAS_THREAD_API_C11 0
+#define _LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS 1
+#define _LIBCPP_HAS_FILESYSTEM 1
+#define _LIBCPP_HAS_RANDOM_DEVICE 1
+#define _LIBCPP_HAS_LOCALIZATION 1
+#define _LIBCPP_HAS_UNICODE 1
+#define _LIBCPP_HAS_WIDE_CHARACTERS 1
+#define _LIBCPP_HAS_TIME_ZONE_DATABASE 0
+#define _LIBCPP_INSTRUMENTED_WITH_ASAN 0
+#define _LIBCPP_PSTL_BACKEND_SERIAL
+#define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_NONE
+
+#endif
+";
 
 /// The libraries an SDK has as links to libSystem, which has them all: the libc crate links `-lc`
 /// and `-lm`.
@@ -537,7 +612,8 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
 }
 
 /// Adds to Zig's files of Apple's SDK libSystem's aliases, libiconv and `sys/syscall.h`, and drops
-/// `arm64e.x1` from libSystem's stub: rust-lld before Rust 1.100 can't read it.
+/// `arm64e.x1` from libSystem's stub: rust-lld before Rust 1.100 can't read it. Configures libc++
+/// as its build does, and makes its `.tbd` of the lists of its exports.
 fn sdk(root: &Path) -> io::Result<()> {
   let lib = root.join("usr/lib");
   let path = lib.join("libSystem.tbd");
@@ -548,10 +624,55 @@ fn sdk(root: &Path) -> io::Result<()> {
 
   fs::write(lib.join("libiconv.tbd"), LIBICONV)?;
   let path = root.join("usr/include/sys/syscall.h");
-  match path.exists() {
-    true => Ok(()),
-    false => fs::write(path, SYSCALL_H),
+  if !path.exists() {
+    fs::write(path, SYSCALL_H)?;
   }
+
+  // clang 18 counts C++20 as modules, and math.h then takes INFINITY and NAN from clang's float.h,
+  // which has them from clang 19.
+  let path = root.join("usr/include/math.h");
+  fs::write(&path, fs::read_to_string(&path)?.replace("__has_feature(modules)", "0"))?;
+  let include = root.join(LIBCXX_INCLUDE);
+  fs::write(include.join("__config_site"), CONFIG_SITE)?;
+  fs::rename(include.join(ASSERTION_HANDLER), include.join("__assertion_handler"))?;
+  let mut lists = vec![];
+  for (arch, name) in ABI_LISTS {
+    lists.push((arch, fs::read_to_string(lib.join(name))?));
+    fs::remove_file(lib.join(name))?;
+  }
+
+  let [cxx, abi] = libcxx_tbds(&lists);
+  fs::write(lib.join("libc++.tbd"), cxx)?;
+  fs::write(lib.join("libc++abi.tbd"), abi)
+}
+
+/// The `.tbd`s of macOS's libc++ and libc++abi from LLVM's lists of libc++'s exports per arch:
+/// lines such as `{'is_defined': True, 'name': '__ZTIn', 'type': 'I'}`, type `I` libc++abi's, which
+/// bind to it as Xcode's do below macOS 15.4: an older libc++ re-exports only some.
+fn libcxx_tbds(lists: &[(&str, String)]) -> [String; 2] {
+  let archs = lists.iter().map(|(arch, _)| format!("{arch}-macos")).collect::<Vec<_>>().join(", ");
+  let head = |name| {
+    format!(
+      "--- !tapi-tbd\ntbd-version: 4\ntargets: [ {archs} ]\ninstall-name: '/usr/lib/{name}'\n"
+    )
+  };
+  let reexport = format!(
+    "reexported-libraries:\n  - targets: [ {archs} ]\n    \
+     libraries: [ '/usr/lib/libc++abi.dylib' ]\n"
+  );
+  let mut out =
+    [head("libc++.1.dylib") + &reexport, head("libc++abi.dylib")].map(|x| x + "exports:\n");
+  let name = |x: &str| Some(format!("'{}'", x.split("'name': '").nth(1)?.split('\'').next()?));
+  for (arch, list) in lists {
+    let defined = list.lines().filter(|x| x.contains("'is_defined': True"));
+    let (abi, cxx): (Vec<_>, Vec<_>) = defined.partition(|x| x.contains("'type': 'I'"));
+    for (out, lines) in out.iter_mut().zip([cxx, abi]) {
+      let names: Vec<_> = lines.into_iter().filter_map(name).collect();
+      *out += &format!("  - targets: [ {arch}-macos ]\n    symbols: [ {} ]\n", names.join(", "));
+    }
+  }
+
+  out.map(|x| x + "...\n")
 }
 
 /// The `.tbd` text `tbd` without the targets that start with `arch`, each with its comma.
@@ -678,6 +799,13 @@ mod tests {
     let got = musl.place(&format!("{gcc}/crtbeginS.o"));
     assert_eq!(got, Some("usr/lib/x86_64-linux-musl/crtbeginS.o".into()));
     assert_eq!(musl.place(&format!("{gcc}/libgcc_s.so")), None);
+
+    let libcxx = &DARWIN[2];
+    assert_eq!(
+      libcxx.place(&format!("{}vector", libcxx.root)),
+      Some("usr/include/c++/v1/vector".into())
+    );
+    assert_eq!(libcxx.place(&format!("{}__cxx03/vector", libcxx.root)), None);
   }
 
   #[test]
@@ -714,35 +842,59 @@ mod tests {
   fn ensure_lays_out_apple_s_sdk() {
     let root = temp("sdk");
     let at = |i: usize, x: &str| format!("{}{x}", DARWIN[i].root);
+    let abi = |x| format!("{{'is_defined': True, 'name': '{x}', 'type': 'FUNC'}}\n");
+    let (arm, x86) = (abi("__Zarm"), abi("__Zx86"));
+    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi.
     let files = [
-      (at(0, "stdio.h"), "stdio"),
-      (at(0, "sys/types.h"), "types"),
-      (at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]"),
+      (0, at(0, "stdio.h"), "stdio"),
+      (0, at(0, "sys/types.h"), "types"),
+      (0, at(0, "math.h"), "#if __has_feature(modules) && x"),
+      (1, at(1, "libSystem.tbd"), "[ arm64e-macos, arm64e.x1-macos ]"),
       // Not taken: one that the sysroot leaves out, and another libc's.
-      (at(1, "SDKSettings.json"), "{}"),
-      (DARWIN[1].root.replace("/darwin/", "/glibc/") + "stdio.h", "glibc"),
+      (1, at(1, "SDKSettings.json"), "{}"),
+      (1, DARWIN[1].root.replace("/darwin/", "/glibc/") + "stdio.h", "glibc"),
+      (2, at(2, "vector"), "vector"),
+      (3, at(3, ASSERTION_HANDLER), "handler"),
+      (4, at(4, ABI_LISTS[0].1), &arm),
+      (4, at(4, ABI_LISTS[1].1), &x86),
+      (4, at(4, "x86_64-unknown-linux-gnu.libcxxabi.v1.stable.exceptions.nonew.abilist"), "linux"),
+      (5, at(5, "cxxabi.h"), "cxxabi"),
+      (5, at(5, "CMakeLists.txt"), "cmake"),
     ];
-    let files: Vec<_> = files.iter().map(|(x, data)| (x.as_str(), *data)).collect();
-    let tar = tarball(&files, &[]);
 
-    let mut xz = vec![];
-    lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
-    fs::write(root.join(DARWIN[0].path), &xz).unwrap();
-
-    let sha256: &str = hex(&hmac_sha256::Hash::hash(&xz)).leak();
     let mirror: &str = format!("file://{}", root.display()).leak();
-    let pkgs: Vec<_> =
-      DARWIN.iter().map(|x| Package { mirrors: vec![mirror].leak(), sha256, ..*x }).collect();
-    let dir = ensure(&root.join("cache"), "macos", &pkgs).unwrap();
+    let mut pkgs = vec![];
+    for pkg in DARWIN {
+      let mine = files.iter().filter(|(i, ..)| DARWIN[*i].path == pkg.path);
+      let tar = tarball(&mine.map(|(_, x, data)| (x.as_str(), *data)).collect::<Vec<_>>(), &[]);
+      let mut xz = vec![];
+      lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
+      fs::write(root.join(pkg.path), &xz).unwrap();
+      let sha256 = hex(&hmac_sha256::Hash::hash(&xz)).leak();
+      pkgs.push(Package { mirrors: vec![mirror].leak(), sha256, ..*pkg });
+    }
 
+    let dir = ensure(&root.join("cache"), "macos", &pkgs).unwrap();
     let read = |x: &str| fs::read_to_string(dir.join(x)).unwrap();
     assert_eq!(read("usr/include/stdio.h"), "stdio");
     assert_eq!(read("usr/include/sys/types.h"), "types");
+    assert_eq!(read("usr/include/math.h"), "#if 0 && x");
     assert_eq!(read("usr/lib/libSystem.tbd"), "[ arm64e-macos ]");
     assert_eq!(read("usr/lib/libc.tbd"), "[ arm64e-macos ]");
     assert_eq!(read("usr/lib/libm.tbd"), "[ arm64e-macos ]");
     assert!(read("usr/lib/libiconv.tbd").contains("'/usr/lib/libiconv.2.dylib'"));
     assert!(read("usr/include/sys/syscall.h").contains("_SYS_SYSCALL_H_"));
+
+    let tbd = read("usr/lib/libc++.tbd");
+    assert!(tbd.contains("[ arm64-macos ]\n    symbols: [ '__Zarm' ]\n"));
+    assert!(tbd.contains("[ x86_64-macos ]\n    symbols: [ '__Zx86' ]\n"));
+    assert!(read("usr/lib/libc++abi.tbd").contains("'/usr/lib/libc++abi.dylib'"));
+
+    let v1 = "usr/include/c++/v1/";
+    assert_eq!(read(&format!("{v1}vector")), "vector");
+    assert_eq!(read(&format!("{v1}__assertion_handler")), "handler");
+    assert_eq!(read(&format!("{v1}cxxabi.h")), "cxxabi");
+    assert!(read(&format!("{v1}__config_site")).contains("_AVAILABILITY_ANNOTATIONS 1\n"));
 
     let names = |x: &str| {
       let mut out: Vec<_> =
@@ -752,7 +904,48 @@ mod tests {
     };
     assert_eq!(names(""), ["usr"]);
     assert_eq!(names("usr"), ["include", "lib"]);
+    assert!(names("usr/lib").iter().all(|x| !x.to_string_lossy().ends_with(".abilist")));
+    assert_eq!(names(v1), ["__assertion_handler", "__config_site", "cxxabi.h", "vector"]);
     fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn libcxx_tbds_list_each_arch_s_exports() {
+    let list = |x| {
+      format!(
+        "{{'is_defined': True, 'name': '{x}', 'type': 'FUNC'}}
+{{'is_defined': False, 'name': '_free', 'type': 'U'}}
+{{'is_defined': False, 'name': '___cxa_throw', 'type': 'U'}}
+{{'is_defined': True, 'name': '___cxa_throw', 'type': 'I'}}
+"
+      )
+    };
+    let cxx = "--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, x86_64-macos ]
+install-name: '/usr/lib/libc++.1.dylib'
+reexported-libraries:
+  - targets: [ arm64-macos, x86_64-macos ]
+    libraries: [ '/usr/lib/libc++abi.dylib' ]
+exports:
+  - targets: [ arm64-macos ]
+    symbols: [ '__Za' ]
+  - targets: [ x86_64-macos ]
+    symbols: [ '__Zb' ]
+...
+";
+    let abi = "--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, x86_64-macos ]
+install-name: '/usr/lib/libc++abi.dylib'
+exports:
+  - targets: [ arm64-macos ]
+    symbols: [ '___cxa_throw' ]
+  - targets: [ x86_64-macos ]
+    symbols: [ '___cxa_throw' ]
+...
+";
+    assert_eq!(libcxx_tbds(&[("arm64", list("__Za")), ("x86_64", list("__Zb"))]), [cxx, abi]);
   }
 
   #[test]

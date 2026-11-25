@@ -1,5 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-// libstdc++ from C++ through cmake: std::async on a thread, a map, an exception across them.
+// The C++ library from C++ through cmake: std::async on a thread, a map, an exception across
+// them.
 #include <future>
 #include <map>
 #include <stdexcept>
