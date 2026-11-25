@@ -2,8 +2,9 @@
 //! The test crate cargo-solo builds for every target: ring (C and assembly through cc), with the
 //! `aws-lc-rs` feature aws-lc-rs, rustls' crypto (C through its own cc build, NASM objects on
 //! Windows), a C file of its own, a C program its build script links and a C library through
-//! cmake, a thread, and on Windows a `raw-dylib` link, as windows-sys's are. It prints one line,
-//! the same on every target.
+//! cmake, a thread, on Windows a `raw-dylib` link, as windows-sys's are, and on macOS Apple's
+//! frameworks: CoreFoundation for the time zone, as chrono's, Security, as native-tls', and
+//! SystemConfiguration for the proxies, as reqwest's. It prints one line, the same on every target.
 
 use std::ffi::{CStr, c_char, c_int};
 
@@ -29,6 +30,13 @@ fn main() {
   let aws = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, text.to_bytes());
   #[cfg(windows)]
   assert_eq!(unsafe { GetCurrentProcessId() }, std::process::id());
+  #[cfg(target_os = "macos")]
+  {
+    assert!(!iana_time_zone::get_timezone().unwrap().is_empty());
+    security_framework::random::SecRandom::default().copy_bytes(&mut [0; 8]).unwrap();
+    let store = system_configuration::dynamic_store::SCDynamicStoreBuilder::new("hello").build();
+    assert!(store.unwrap().get_proxies().is_some());
+  }
 
   let hex = |x: &[u8]| x[..8].iter().map(|x| format!("{x:02x}")).collect::<String>();
   print!("hello {len} {}", hex(sum.join().unwrap().as_ref()));

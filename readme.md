@@ -58,12 +58,12 @@ Without `--target`, it sets up the targets of `build.target` in cargo's config, 
 | `x86_64-unknown-linux-musl` | musl 1.2.5 | 4.4 MB | 13 MB |
 | `aarch64-unknown-linux-musl` | musl 1.2.5 | 2.9 MB | 10 MB |
 | `x86_64-pc-windows-gnu` | mingw-w64 12 | 16 MB | 210 MB |
-| `aarch64-apple-darwin` | libSystem, libc++ | 28 MB | 19 MB |
+| `aarch64-apple-darwin` | libSystem, libc++ | 30 MB | 19 MB |
 | `x86_64-apple-darwin` | libSystem, libc++ | the same | the same |
 
 On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
 
-macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it, but no Apple frameworks: a crate that links one, such as `security-framework`, fails. For those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
+macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it. Rust links the frameworks common crates use: CoreFoundation, Foundation, Security, SystemConfiguration, IOKit, OpenDirectory and CoreServices, with libobjc, for chrono, native-tls, reqwest, sysinfo and notify. C that includes a framework's headers, as curl-sys and rdkafka-sys do, and any other framework fail: for those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
 
 ## ⚙️ How it works
 
@@ -121,7 +121,7 @@ The usual ways to cross-compile, and what each costs:
 | glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
 | musl, Windows gnu | ✅ | ✅ | ✅ |
 | On Apple silicon | native | native | x86_64, emulated |
-| Apple targets | ➖ no frameworks | ➖ frameworks in its Docker image | ➖ your own image |
+| Apple targets | ➖ Rust's frameworks | ➖ frameworks in its Docker image | ➖ your own image |
 | C++, cmake | ✅ | ✅ | ✅ |
 
 Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).
@@ -138,17 +138,6 @@ On CI without a cache, every build is a first one: the tool fetches or compiles 
 | Installed once | llvm-tools, 41 MB | Zig, 57 MB | Docker |
 
 The targets are `x86_64-unknown-linux-gnu` and `-musl`, then `x86_64` and `aarch64-unknown-linux-musl` with `x86_64-pc-windows-gnu`. cargo-zigbuild's next build is the fastest: Zig keeps the libc it compiled in its own cache.
-
-## 🗺️ Roadmap
-
-- `cargo solo fetch`: a target's files in a Docker layer of their own, before the sources.
-- Linux system libraries from Debian named in `Cargo.toml`, such as ALSA's.
-- Other glibc versions, each a Debian release.
-- `armv7`, `aarch64-pc-windows-gnullvm` and `riscv64`.
-
-## 🤖 How it's made
-
-cargo-solo is built with AI agents following [agents.md](agents.md): I choose what to build, review the changes and test them on real machines. Before agents, I wrote software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)).
 
 ## 🤝 Contributing
 
