@@ -471,6 +471,113 @@ const SECURITY_HEADERS: &[&str] = &[
   "x509defs.h",
 ];
 
+/// What SystemConfiguration exports that objc2 leaves out: its variadic function.
+const SC_EXTRA: &[&str] = &["SCDynamicStoreKeyCreate"];
+
+/// What Security exports that objc2 leaves out: functions that take a block, an XPC message or an
+/// audit token, and the OIDs of `oids.h`, libDER's.
+const SECURITY_EXTRA: &[&str] = &[
+  "SecCodeCreateWithXPCMessage",
+  "SecKeyGeneratePairAsync",
+  "SecTaskCreateWithAuditToken",
+  "SecTransformExecuteAsync",
+  "SecTrustEvaluateAsync",
+  "SecTrustEvaluateAsyncWithError",
+  "oidAdCAIssuer",
+  "oidAdOCSP",
+  "oidAnsip384r1",
+  "oidAnsip521r1",
+  "oidAnyExtendedKeyUsage",
+  "oidAnyPolicy",
+  "oidAuthorityInfoAccess",
+  "oidAuthorityKeyIdentifier",
+  "oidBasicConstraints",
+  "oidCertificatePolicies",
+  "oidCommonName",
+  "oidCountryName",
+  "oidCrlDistributionPoints",
+  "oidDescription",
+  "oidEcPrime192v1",
+  "oidEcPrime256v1",
+  "oidEcPubKey",
+  "oidEmailAddress",
+  "oidEntrustVersInfo",
+  "oidExtendedKeyUsage",
+  "oidExtendedKeyUsageClientAuth",
+  "oidExtendedKeyUsageCodeSigning",
+  "oidExtendedKeyUsageEmailProtection",
+  "oidExtendedKeyUsageIPSec",
+  "oidExtendedKeyUsageMicrosoftSGC",
+  "oidExtendedKeyUsageNetscapeSGC",
+  "oidExtendedKeyUsageOCSPSigning",
+  "oidExtendedKeyUsageServerAuth",
+  "oidExtendedKeyUsageTimeStamping",
+  "oidFee",
+  "oidFriendlyName",
+  "oidGoogleEmbeddedSignedCertificateTimestamp",
+  "oidGoogleOCSPSignedCertificateTimestamp",
+  "oidInhibitAnyPolicy",
+  "oidIssuerAltName",
+  "oidKeyUsage",
+  "oidLocalKeyId",
+  "oidLocalityName",
+  "oidMSNTPrincipalName",
+  "oidMd2",
+  "oidMd2Rsa",
+  "oidMd4",
+  "oidMd4Rsa",
+  "oidMd5",
+  "oidMd5Fee",
+  "oidMd5Rsa",
+  "oidNameConstraints",
+  "oidNetscapeCertType",
+  "oidOrganizationName",
+  "oidOrganizationalUnitName",
+  "oidPolicyConstraints",
+  "oidPolicyMappings",
+  "oidPrivateKeyUsagePeriod",
+  "oidQtCps",
+  "oidQtUNotice",
+  "oidRsa",
+  "oidSha1",
+  "oidSha1Dsa",
+  "oidSha1DsaCommonOIW",
+  "oidSha1DsaOIW",
+  "oidSha1Ecdsa",
+  "oidSha1Fee",
+  "oidSha1Rsa",
+  "oidSha1RsaOIW",
+  "oidSha224",
+  "oidSha224Ecdsa",
+  "oidSha224Rsa",
+  "oidSha256",
+  "oidSha256Ecdsa",
+  "oidSha256Rsa",
+  "oidSha384",
+  "oidSha384Ecdsa",
+  "oidSha384Rsa",
+  "oidSha512",
+  "oidSha512Ecdsa",
+  "oidSha512Rsa",
+  "oidStateOrProvinceName",
+  "oidSubjectAltName",
+  "oidSubjectInfoAccess",
+  "oidSubjectKeyIdentifier",
+  "sec_protocol_metadata_access_distinguished_names",
+  "sec_protocol_metadata_access_ocsp_response",
+  "sec_protocol_metadata_access_pre_shared_keys",
+  "sec_protocol_metadata_copy_peer_public_key",
+  "sec_protocol_metadata_create_secret",
+  "sec_protocol_metadata_create_secret_with_context",
+  "sec_protocol_options_add_pre_shared_key",
+  "sec_protocol_options_set_challenge_block",
+  "sec_protocol_options_set_key_update_block",
+  "sec_protocol_options_set_pre_shared_key_selection_block",
+  "sec_protocol_options_set_tls_diffie_hellman_parameters",
+  "sec_protocol_options_set_tls_pre_shared_key_identity_hint",
+  "sec_protocol_options_set_verify_block",
+];
+
 /// Where objc2's crates go until [sdk] has read them.
 const OBJC2: &str = "objc2/";
 
@@ -895,8 +1002,8 @@ fn sdk(root: &Path) -> io::Result<()> {
   }
 
   // libDER's `DERItem`, the type of Security's OIDs, written out: libDER isn't open source.
-  let der = "#include <stddef.h>\n#include <stdint.h>\n\
-             typedef struct { uint8_t *data; size_t length; } DERItem;\n";
+  let der = "#ifndef _DER_ITEM_H_\n#define _DER_ITEM_H_\n#include <stddef.h>\n#include <stdint.h>\n\
+             typedef struct { uint8_t *data; size_t length; } DERItem;\n#endif\n";
   let oids = root.join(FRAMEWORKS).join("Security.framework/Headers/oids.h");
   patch(&oids, "#include <libDER/DERItem.h>\n", der)?;
 
@@ -1010,6 +1117,8 @@ fn frameworks(root: &Path) -> io::Result<()> {
     let mut symbols = externs_in(&dir.join(src))?;
     let extra = match name {
       "CoreFoundation" => CF_EXTRA,
+      "SystemConfiguration" => SC_EXTRA,
+      "Security" => SECURITY_EXTRA,
       "IOKit" => IOKIT_PRIVATE,
       _ => &[],
     };
@@ -1406,7 +1515,8 @@ mod tests {
     assert!(cf.contains("symbols: [ '_CFArrayCreate', '_CFCalendarAddComponents', "));
     assert!(cf.contains("'___CFConstantStringClassReference'"));
     let sec = read("System/Library/Frameworks/Security.framework/Security.tbd");
-    assert!(sec.contains("symbols: [ '_kSecClass' ]\n"));
+    assert!(sec.contains("'_SecTrustEvaluateAsyncWithError', '_kSecClass', '_oid"));
+    assert!(sec.contains("'_oidRsa'"));
     let objc = read("usr/lib/libobjc.tbd");
     assert!(objc.contains("install-name: '/usr/lib/libobjc.A.dylib'\n"));
     assert!(objc.contains("symbols: [ '_objc_retain' ]\n"));
@@ -1442,7 +1552,9 @@ mod tests {
     assert_eq!(names(&headers), all);
     assert_eq!(read(&format!("{headers}SecBase.h")), "API_UNAVAILABLE(ios, macCatalyst)");
     assert_eq!(read(&format!("{headers}SecKeychain.h")), "API_AVAILABLE(macos(1))");
-    assert!(read(&format!("{headers}oids.h")).contains("size_t length; } DERItem;\nextern"));
+    assert!(
+      read(&format!("{headers}oids.h")).contains("size_t length; } DERItem;\n#endif\nextern")
+    );
     fs::remove_dir_all(root).unwrap();
   }
 
