@@ -994,11 +994,12 @@ fn sdk(root: &Path) -> io::Result<()> {
   // dispatch through it.
   patch(&cf.join("CFStream.h"), "#if __HAS_DISPATCH__\n", "#if 1\n")?;
 
-  // configd's and Security's headers as Apple's build installs them: without bridgeOS.
+  // configd's and Security's headers as Apple's build installs them: an SPI unavailable, as it's
+  // not public, and without bridgeOS.
   let sc = SC_HEADERS.iter().map(|x| ("SystemConfiguration", x));
   for (fw, name) in sc.chain(SECURITY_HEADERS.iter().map(|x| ("Security", x))) {
     let path = root.join(FRAMEWORKS).join(format!("{fw}.framework/Headers")).join(name);
-    fs::write(&path, no_bridgeos(&fs::read(&path)?))?;
+    fs::write(&path, no_bridgeos(&no_spi(&fs::read(&path)?)))?;
   }
 
   // libDER's `DERItem`, the type of Security's OIDs, written out: libDER isn't open source.
@@ -1008,6 +1009,50 @@ fn sdk(root: &Path) -> io::Result<()> {
   patch(&oids, "#include <libDER/DERItem.h>\n", der)?;
 
   frameworks(root)
+}
+
+/// `text` with each SPI's mark, `SPI_AVAILABLE(macos(12.0), ios(15.0))` or `SPI_DEPRECATED("…",
+/// ios(2.0, 9.0))`, made `API_UNAVAILABLE(macos, ios)`, as in Xcode's headers: Zig's, as Xcode's,
+/// define the marks as nothing, which would leave an SPI available. Bytes, as [no_bridgeos].
+fn no_spi(text: &[u8]) -> Vec<u8> {
+  let marks = [&b"SPI_AVAILABLE("[..], b"SPI_DEPRECATED("];
+  let mut out = Vec::with_capacity(text.len());
+  let mut at = 0;
+  while at < text.len() {
+    let Some(mark) = marks.iter().find(|x| text[at..].starts_with(x)) else {
+      out.push(text[at]);
+      at += 1;
+      continue;
+    };
+
+    // Its platforms: each a name before a `(` in its list, past a message's quotes.
+    let (mut depth, mut quoted, mut names) = (1, false, vec![]);
+    let (mut word, mut end) = (at + mark.len(), at + mark.len());
+    while depth > 0 && end < text.len() {
+      match text[end] {
+        b'"' => quoted = !quoted,
+        b'(' if !quoted => {
+          if depth == 1 {
+            names.push(text[word..end].trim_ascii());
+          }
+
+          depth += 1;
+        }
+        b')' if !quoted => depth -= 1,
+        b',' if !quoted && depth == 1 => word = end + 1,
+        _ => {}
+      }
+
+      end += 1;
+    }
+
+    out.extend_from_slice(b"API_UNAVAILABLE(");
+    out.extend_from_slice(&names.join(&b", "[..]));
+    out.push(b')');
+    at = end;
+  }
+
+  out
 }
 
 /// `text` without bridgeOS in its availability marks, which only Apple's clang knows: `, bridgeos`
@@ -1543,7 +1588,7 @@ mod tests {
 
     let headers = format!("{FRAMEWORKS}/SystemConfiguration.framework/Headers/");
     assert_eq!(names(&headers), SC_HEADERS);
-    let sc = "f(void) API_UNAVAILABLE(ios) SPI_AVAILABLE(ios(2.0));";
+    let sc = "f(void) API_UNAVAILABLE(ios) API_UNAVAILABLE(ios);";
     assert_eq!(read(&format!("{headers}SCDynamicStore.h")), sc);
 
     let headers = format!("{FRAMEWORKS}/Security.framework/Headers/");
@@ -1556,6 +1601,26 @@ mod tests {
       read(&format!("{headers}oids.h")).contains("size_t length; } DERItem;\n#endif\nextern")
     );
     fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn no_spi_makes_an_spi_unavailable() {
+    let cases = [
+      ("f(void) SPI_AVAILABLE(macos(12.0), ios(15.0));", "f(void) API_UNAVAILABLE(macos, ios);"),
+      (
+        "SPI_DEPRECATED(\"not (yet)\", ios(1.0, 15.0), tvos(9.0, 15.0)) x",
+        "API_UNAVAILABLE(ios, tvos) x",
+      ),
+      (
+        "SPI_AVAILABLE_BEGIN(ios(2.0)) SPI_AVAILABLE",
+        "SPI_AVAILABLE_BEGIN(ios(2.0)) SPI_AVAILABLE",
+      ),
+    ];
+    for (text, want) in cases {
+      assert_eq!(String::from_utf8(no_spi(text.as_bytes())).unwrap(), want, "{text}");
+    }
+
+    assert_eq!(no_spi(b"\xd5 SPI_AVAILABLE(ios(2.0))"), b"\xd5 API_UNAVAILABLE(ios)");
   }
 
   #[test]
