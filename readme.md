@@ -58,7 +58,7 @@ Without `--target`, it sets up the targets of `build.target` in cargo's config, 
 | `x86_64-unknown-linux-musl` | musl 1.2.5 | 4.4 MB | 13 MB |
 | `aarch64-unknown-linux-musl` | musl 1.2.5 | 2.9 MB | 10 MB |
 | `x86_64-pc-windows-gnu` | mingw-w64 12 | 16 MB | 210 MB |
-| `aarch64-apple-darwin` | libSystem, libc++ | 30 MB | 19 MB |
+| `aarch64-apple-darwin` | libSystem, libc++ | 33 MB | 21 MB |
 | `x86_64-apple-darwin` | libSystem, libc++ | the same | the same |
 
 On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
