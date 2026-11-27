@@ -63,7 +63,7 @@ Without `--target`, it sets up the targets of `build.target` in cargo's config, 
 
 On a Linux host, `--target` its own `-linux-gnu` too, so the binary needs glibc 2.28, not the build machine's.
 
-macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it. Rust links the frameworks common crates use: CoreFoundation, Foundation, Security, SystemConfiguration, IOKit, OpenDirectory and CoreServices, with libobjc, for chrono, native-tls, reqwest, sysinfo and notify. C that includes a framework's headers, as curl-sys and rdkafka-sys do, and any other framework fail: for those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.12 on x86_64; as with Xcode, C++ newer than that fails to compile, such as aligned `new` (10.13), which rocksdb and duckdb use, or `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
+macOS targets, built on Linux or Windows, get Rust, C and C++, linked against macOS's own libc++ as Xcode links it. Rust links the frameworks common crates use: CoreFoundation, Foundation, Security, SystemConfiguration, IOKit, OpenDirectory and CoreServices, with libobjc, for chrono, native-tls, reqwest, sysinfo and notify. C gets the headers of CoreFoundation and SystemConfiguration from Apple's open source, for curl-sys and rdkafka-sys. C with another framework's headers, such as Security's, which SystemConfiguration's umbrella header takes, and any other framework fail: for those, set `SDKROOT` to Xcode's SDK from a Mac, or build on a Mac. The binary runs on macOS 11 on arm64, 10.13 on x86_64; as with Xcode, C++ newer than that fails to compile, such as `std::filesystem` (10.15): set `MACOSX_DEPLOYMENT_TARGET` for it.
 
 ## ⚙️ How it works
 
@@ -121,7 +121,7 @@ The usual ways to cross-compile, and what each costs:
 | glibc | 2.28, Debian 10's | any, Zig's stubs | 2.39, or 2.17 (CentOS) |
 | musl, Windows gnu | ✅ | ✅ | ✅ |
 | On Apple silicon | native | native | x86_64, emulated |
-| Apple targets | ➖ Rust's frameworks | ➖ frameworks in its Docker image | ➖ your own image |
+| Apple targets | ➖ common frameworks | ➖ frameworks in its Docker image | ➖ your own image |
 | C++, cmake | ✅ | ✅ | ✅ |
 
 Take another tool for glibc below 2.28 (cargo-zigbuild's `.2.17`, cross's CentOS images), a target's tests through QEMU (cross), and `-windows-msvc` ([cargo-xwin](https://github.com/rust-cross/cargo-xwin)).

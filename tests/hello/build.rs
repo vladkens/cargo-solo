@@ -1,7 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/cargo-solo
-//! Compiles the C half of the test crate through cc, as a crate's C dependency is, links a C
-//! program as a configure script does (jemalloc's, for one), and builds a C library through
-//! cmake-rs.
+//! Compiles the C half of the test crate through cc, as a crate's C dependency is, on macOS with
+//! Apple's frameworks, links a C program as a configure script does (jemalloc's, for one), and
+//! builds a C library through cmake-rs.
 
 use std::env;
 use std::path::PathBuf;
@@ -10,6 +10,14 @@ use std::process::Command;
 fn main() {
   cc::Build::new().file("src/hello.c").compile("hello");
   println!("cargo:rerun-if-changed=src/hello.c");
+  if env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {
+    cc::Build::new().file("src/apple.c").compile("apple");
+    for name in ["CoreFoundation", "SystemConfiguration"] {
+      println!("cargo:rustc-link-lib=framework={name}");
+    }
+
+    println!("cargo:rerun-if-changed=src/apple.c");
+  }
 
   // By the C compiler alone, with an archive by the target's ar, found in PATH by `--host`.
   let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());

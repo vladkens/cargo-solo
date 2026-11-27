@@ -84,6 +84,13 @@ const LLVM: &[&str] = &["https://github.com/llvm/llvm-project/releases/download/
 /// crates.io's files, which never change once published.
 const CRATES_IO: &[&str] = &["https://static.crates.io/crates"];
 
+/// The releases of Swift's CoreFoundation, Apple's own for Swift on Linux and Windows, on GitHub.
+const SWIFT_FOUNDATION: &[&str] =
+  &["https://github.com/swiftlang/swift-corelibs-foundation/archive/refs/tags"];
+
+/// The releases of configd, SystemConfiguration's source, on GitHub, where Apple publishes it.
+const CONFIGD: &[&str] = &["https://github.com/apple-oss-distributions/configd/archive/refs/tags"];
+
 /// AlmaLinux 8.10's AppStream, RHEL 8's rebuilt, and kernel.org's copy: 8's last release, whose
 /// packages stay until 8's end in 2029.
 const ALMA8: &[&str] = &[
@@ -316,6 +323,44 @@ pub const DARWIN: &[Package] = &[
     "objc2-system-configuration/objc2-system-configuration-0.3.2.crate",
     "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396",
   ),
+  // From Apple's open source, the headers C takes: CoreFoundation's, Swift's (Apache 2.0), which
+  // [sdk] sets up for macOS, and SystemConfiguration's, configd's (APSL 2.0).
+  Package {
+    mirrors: SWIFT_FOUNDATION,
+    path: "swift-6.4.3-RELEASE.tar.gz",
+    sha256: "5dbff647b941ce93884535f5d90620a6dd49c1a7dc62e88f67e4843a26354602",
+    root: "swift-corelibs-foundation-swift-6.4.3-RELEASE/Sources/CoreFoundation/include/",
+    // Not Swift's own headers: ForSwiftFoundationOnly.h and the module maps.
+    keep: &["CF", "CoreFoundation.h"],
+    into: "System/Library/Frameworks/CoreFoundation.framework/Headers/",
+  },
+  Package {
+    mirrors: CONFIGD,
+    path: "configd-1405.120.5.tar.gz",
+    sha256: "f7ca6af8e6eb53a8daccac12d876d3967e62499e1ab5de46f9515487ec7ebe3e",
+    root: "configd-configd-1405.120.5/SystemConfiguration.fproj/",
+    keep: SC_HEADERS,
+    into: "System/Library/Frameworks/SystemConfiguration.framework/Headers/",
+  },
+];
+
+/// SystemConfiguration's public headers, the ones Xcode's SDK has of configd's.
+const SC_HEADERS: &[&str] = &[
+  "CaptiveNetwork.h",
+  "DHCPClientPreferences.h",
+  "SCDynamicStore.h",
+  "SCDynamicStoreCopyDHCPInfo.h",
+  "SCDynamicStoreCopySpecific.h",
+  "SCDynamicStoreKey.h",
+  "SCNetwork.h",
+  "SCNetworkConfiguration.h",
+  "SCNetworkConnection.h",
+  "SCNetworkReachability.h",
+  "SCPreferences.h",
+  "SCPreferencesPath.h",
+  "SCPreferencesSetSpecific.h",
+  "SCSchemaDefinitions.h",
+  "SystemConfiguration.h",
 ];
 
 /// Where objc2's crates go until [sdk] has read them.
@@ -324,14 +369,22 @@ const OBJC2: &str = "objc2/";
 /// The folder of the SDK's frameworks, where ld64 looks for them.
 const FRAMEWORKS: &str = "System/Library/Frameworks";
 
-/// CoreFoundation's variadic functions, which objc2 leaves out and core-foundation-sys binds.
-const CF_VARIADIC: &[&str] = &[
+/// What CoreFoundation exports that objc2 leaves out: its variadic functions, which
+/// core-foundation-sys binds, their `va_list` forms, and what its macros call for C, `CFSTR`'s
+/// class of constant strings among them.
+const CF_EXTRA: &[&str] = &[
   "CFCalendarAddComponents",
   "CFCalendarComposeAbsoluteTime",
   "CFCalendarDecomposeAbsoluteTime",
   "CFCalendarGetComponentDifference",
+  "CFMakeCollectable",
   "CFStringAppendFormat",
+  "CFStringAppendFormatAndArguments",
   "CFStringCreateWithFormat",
+  "CFStringCreateWithFormatAndArguments",
+  "__CFConstantStringClassReference",
+  "__CFRangeMake",
+  "__CFStringMakeConstantString",
 ];
 
 /// IOKit's private functions, which objc2 leaves out and sysinfo binds for Apple silicon's
@@ -654,7 +707,7 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
         let tar = match file.rsplit('.').next() {
           Some("deb") => member(&data, "data.tar.xz").and_then(xz),
           Some("rpm") => payload(&data).and_then(xz),
-          Some("apk" | "crate") => gunzip(&data),
+          Some("apk" | "crate" | "gz") => gunzip(&data),
           _ => xz(&data),
         };
 
@@ -715,7 +768,33 @@ fn sdk(root: &Path) -> io::Result<()> {
   fs::write(lib.join("libc++.tbd"), cxx)?;
   fs::write(lib.join("libc++abi.tbd"), abi)?;
 
+  // Swift's CoreFoundation is macOS's, but for Swift's runtime unless told: macOS's has its own
+  // constant strings, and its umbrella takes none of Swift's headers.
+  let cf = root.join(FRAMEWORKS).join("CoreFoundation.framework/Headers");
+  let swift = "#define DEPLOYMENT_RUNTIME_SWIFT ";
+  patch(&cf.join("CFAvailability.h"), &format!("{swift}1"), &format!("{swift}0"))?;
+  patch(&cf.join("CoreFoundation.h"), "#include \"CFConstantKeys.h\"\n", "")?;
+  patch(&cf.join("CoreFoundation.h"), "#include \"ForSwiftFoundationOnly.h\"\n", "")?;
+
+  // configd's headers as Apple's build installs them: without bridgeOS, which only Apple's clang
+  // knows, in what they're unavailable on.
+  for name in SC_HEADERS {
+    let path = root.join(FRAMEWORKS).join("SystemConfiguration.framework/Headers").join(name);
+    fs::write(&path, fs::read_to_string(&path)?.replace(", bridgeos)", ")"))?;
+  }
+
   frameworks(root)
+}
+
+/// Replaces `from` in the file at `path` with `to`; fails when it hasn't `from`, as a newer pin
+/// may not.
+fn patch(path: &Path, from: &str, to: &str) -> io::Result<()> {
+  let text = fs::read_to_string(path)?;
+  if !text.contains(from) {
+    return Err(bad(format!("{}: no {from:?}", path.display())));
+  }
+
+  fs::write(path, text.replace(from, to))
 }
 
 /// The `.tbd`s of macOS's libc++ and libc++abi from LLVM's lists of libc++'s exports per arch:
@@ -776,7 +855,7 @@ fn frameworks(root: &Path) -> io::Result<()> {
 
     let mut symbols = externs_in(&dir.join(src))?;
     let extra = match name {
-      "CoreFoundation" => CF_VARIADIC,
+      "CoreFoundation" => CF_EXTRA,
       "IOKit" => IOKIT_PRIVATE,
       _ => &[],
     };
@@ -910,9 +989,20 @@ fn fetch(pkg: &Package, path: &Path) -> io::Result<Vec<u8>> {
     let url = format!("{mirror}/{}", pkg.path);
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60"]);
-    curl.args(["--retry", "2", "-o"]).arg(path).arg(&url);
+    curl.args(["--retry", "2", "-C", "-", "-o"]).arg(path).arg(&url);
 
-    let got = run(&mut curl).and_then(|_| fs::read(path));
+    // A download cut short goes on where it stopped, while each try gets more.
+    let mut got = run(&mut curl);
+    let mut size = 0;
+    while let Err(_) = got
+      && let Ok(x) = fs::metadata(path)
+      && x.len() > size
+    {
+      size = x.len();
+      got = run(&mut curl);
+    }
+
+    let got = got.and_then(|_| fs::read(path));
     let _ = fs::remove_file(path);
     match got {
       Ok(data) => {
@@ -957,7 +1047,7 @@ mod tests {
     for pkg in every_package() {
       let hex = pkg.sha256.bytes().all(|x| x.is_ascii_digit() || (b'a'..=b'f').contains(&x));
       assert!(pkg.sha256.len() == 64 && hex, "{}", pkg.path);
-      let kinds = [".deb", ".rpm", ".apk", ".crate", ".tar.xz"];
+      let kinds = [".deb", ".rpm", ".apk", ".crate", ".tar.xz", ".tar.gz"];
       assert!(kinds.iter().any(|x| pkg.path.ends_with(x)), "{}", pkg.path);
       assert!(pkg.mirrors.iter().all(|x| x.starts_with("https://") && !x.ends_with('/')));
       assert!(pkg.root.is_empty() || pkg.root.ends_with('/'));
@@ -1054,7 +1144,8 @@ mod tests {
     let (arm, x86) = (abi("__Zarm"), abi("__Zx86"));
     let config = |x| format!("framework = \"{x}\"\n");
     let (cf, sec) = (config("CoreFoundation"), config("Security"));
-    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi, objc2's.
+    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi, objc2's,
+    // Swift's CoreFoundation, configd.
     let mut files = vec![
       (0, at(0, "stdio.h"), "stdio"),
       (0, at(0, "sys/types.h"), "types"),
@@ -1083,12 +1174,25 @@ mod tests {
       files.push((i, format!("x{i}/src/lib.rs"), ""));
     }
 
+    let umbrella = "#include \"CFBase.h\"\n#include \"CFConstantKeys.h\"\n\
+                    #include \"ForSwiftFoundationOnly.h\"\n";
+    files.extend([
+      (14, at(14, "CFAvailability.h"), "#define DEPLOYMENT_RUNTIME_SWIFT 1\n"),
+      (14, at(14, "CoreFoundation.h"), umbrella),
+      // Not taken: Swift's own.
+      (14, at(14, "ForSwiftFoundationOnly.h"), "swift"),
+      (14, at(14, "module.modulemap"), "module"),
+      (15, at(15, "SCPrivate.h"), "private"),
+    ]);
+    let sc = "f(void) API_UNAVAILABLE(ios, bridgeos) SPI_AVAILABLE(ios(2.0), bridgeos(1.0));";
+    files.extend(SC_HEADERS.iter().map(|x| (15, at(15, x), sc)));
+
     let mirror: &str = format!("file://{}", root.display()).leak();
     let mut pkgs = vec![];
     for pkg in DARWIN {
       let mine = files.iter().filter(|(i, ..)| DARWIN[*i].path == pkg.path);
       let tar = tarball(&mine.map(|(_, x, data)| (x.as_str(), *data)).collect::<Vec<_>>(), &[]);
-      let data = match pkg.path.ends_with(".crate") {
+      let data = match pkg.path.ends_with(".crate") || pkg.path.ends_with(".gz") {
         true => {
           let mut gz = GzEncoder::new(vec![], Compression::default());
           gz.write_all(&tar).unwrap();
@@ -1134,6 +1238,7 @@ mod tests {
     let install = "'/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'";
     assert!(cf.contains(&format!("install-name: {install}\n")));
     assert!(cf.contains("symbols: [ '_CFArrayCreate', '_CFCalendarAddComponents', "));
+    assert!(cf.contains("'___CFConstantStringClassReference'"));
     let sec = read("System/Library/Frameworks/Security.framework/Security.tbd");
     assert!(sec.contains("symbols: [ '_kSecClass' ]\n"));
     let objc = read("usr/lib/libobjc.tbd");
@@ -1150,10 +1255,18 @@ mod tests {
     assert_eq!(names("usr"), ["include", "lib"]);
     assert!(names("usr/lib").iter().all(|x| !x.to_string_lossy().ends_with(".abilist")));
     assert_eq!(names(v1), ["__assertion_handler", "__config_site", "cxxabi.h", "vector"]);
-    assert_eq!(
-      names(FRAMEWORKS),
-      ["CoreFoundation.framework", "Security.framework", "X.framework"]
-    );
+    let frameworks =
+      ["CoreFoundation.framework", "Security.framework", "SystemConfiguration.framework"];
+    assert_eq!(names(FRAMEWORKS), [&frameworks[..], &["X.framework"]].concat());
+
+    let headers = format!("{FRAMEWORKS}/CoreFoundation.framework/Headers/");
+    assert_eq!(names(&headers), ["CFAvailability.h", "CoreFoundation.h"]);
+    assert_eq!(read(&format!("{headers}CFAvailability.h")), "#define DEPLOYMENT_RUNTIME_SWIFT 0\n");
+    assert_eq!(read(&format!("{headers}CoreFoundation.h")), "#include \"CFBase.h\"\n");
+    let headers = format!("{FRAMEWORKS}/SystemConfiguration.framework/Headers/");
+    assert_eq!(names(&headers), SC_HEADERS);
+    let sc = "f(void) API_UNAVAILABLE(ios) SPI_AVAILABLE(ios(2.0), bridgeos(1.0));";
+    assert_eq!(read(&format!("{headers}SCDynamicStore.h")), sc);
     fs::remove_dir_all(root).unwrap();
   }
 

@@ -2,6 +2,7 @@
 //! Unpacks the distros' packages: a `.deb`'s ar and xz, an RPM's cpio, an Alpine package's gzip
 //! streams, and the tarball inside, its links turned into files.
 
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -217,28 +218,90 @@ fn resolve(link: &Path, to: &Path) -> Option<PathBuf> {
 }
 
 /// Turns `links` in `root` into files: Windows makes symlinks only for admins, and Debian's
-/// absolute ones would point into the host. A link to a link waits for it; one to a file no package
-/// has (as libgcc-8-dev's libasan.so) is left out.
-pub fn materialize(root: &Path, mut links: Vec<(PathBuf, PathBuf)>) -> io::Result<()> {
+/// absolute ones would point into the host. Each follows the links on its way; one to a folder
+/// (an Apple framework's `Headers`) waits for the links in it, then copies it.
+pub fn materialize(root: &Path, links: Vec<(PathBuf, PathBuf)>) -> io::Result<()> {
+  let all: HashMap<_, _> = links.iter().map(|(x, to)| (x.as_path(), to.as_path())).collect();
+  let real = links.iter().filter_map(|(x, to)| Some((x.clone(), real(&all, to)?)));
+  let mut links = reachable(root, real.collect());
   loop {
     let count = links.len();
+    let waiting: BTreeSet<_> = links.iter().map(|x| x.0.clone()).collect();
     let mut left = vec![];
     for (link, to) in links {
       let (src, dst) = (root.join(&to), root.join(&link));
+      // The links in a folder sort right after it.
+      let full = || waiting.range::<PathBuf, _>(&to..).next().is_some_and(|x| x.starts_with(&to));
       match fs::metadata(&src) {
-        // No package here has one: a pin that brings one fails here, not in a build.
-        Ok(x) if x.is_dir() => return Err(bad(format!("{}: a link to a folder", link.display()))),
+        Ok(x) if x.is_dir() && full() => left.push((link, to)),
+        Ok(x) if x.is_dir() => copy_dir(&src, &dst)?,
         Ok(_) => copy(&src, &dst)?,
         Err(_) => left.push((link, to)),
       }
     }
 
+    // Links in a loop, which no package here has, are left out.
     if left.is_empty() || left.len() == count {
       return Ok(());
     }
 
     links = left;
   }
+}
+
+/// `to` past each link on its way, as the OS follows them (at most 40, as Linux); none in a loop.
+fn real(links: &HashMap<&Path, &Path>, to: &Path) -> Option<PathBuf> {
+  let mut out = PathBuf::new();
+  let mut rest: Vec<_> = to.components().rev().collect();
+  let mut hops = 0;
+  while let Some(part) = rest.pop() {
+    out.push(part);
+    if let Some(next) = links.get(out.as_path()) {
+      hops += 1;
+      if hops > 40 {
+        return None;
+      }
+
+      rest.extend(next.components().rev());
+      out = PathBuf::new();
+    }
+  }
+
+  Some(out)
+}
+
+/// The [real] `links` whose target is in `root`, or is a folder that only links fill
+/// (System.framework's `Versions/B`): not one to a file no package has (as libgcc-8-dev's
+/// libasan.so), which would hold up a folder it's in, nor one to a folder it's in.
+fn reachable(root: &Path, links: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
+  let links = links.into_iter().filter(|(link, to)| !link.starts_with(to));
+  let (mut out, mut rest): (Vec<_>, Vec<_>) = links.partition(|(_, to)| root.join(to).exists());
+  loop {
+    let made: BTreeSet<_> = out.iter().map(|x| x.0.clone()).collect();
+    let under =
+      |to: &PathBuf| made.range::<PathBuf, _>(to..).next().is_some_and(|x| x.starts_with(to));
+    let (more, left): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(_, to)| under(to));
+    if more.is_empty() {
+      return out;
+    }
+
+    out.extend(more);
+    rest = left;
+  }
+}
+
+/// [copy] of each file under `src` to `dst`.
+fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
+  for entry in fs::read_dir(src)? {
+    let entry = entry?;
+    let (src, dst) = (entry.path(), dst.join(entry.file_name()));
+    match entry.file_type()?.is_dir() {
+      true => copy_dir(&src, &dst)?,
+      false => copy(&src, &dst)?,
+    }
+  }
+
+  Ok(())
 }
 
 /// A hard link, or a copy where the file system has none; a file already at `dst` stays.
@@ -413,10 +476,56 @@ pub mod tests {
 
     let link = fs::symlink_metadata(root.join("lib/x/libc.so.6")).unwrap();
     assert!(link.is_file());
+    fs::remove_dir_all(root).unwrap();
+  }
 
-    let tar = tarball(&[("./usr/lib/x/sub/b.h", "b")], &[("./usr/lib/x/dir", "sub", false)]);
-    let got = unpack(&tar, keep, &root).unwrap();
-    assert!(materialize(&root, got).unwrap_err().to_string().contains("a link to a folder"));
+  #[test]
+  fn materialize_copies_a_framework_s_folders() {
+    let root = temp("folders");
+    let (f, s) = ("F.framework/", "F.framework/Versions/A/Frameworks/S.framework/");
+    let files = [
+      (format!("{f}Versions/A/F.tbd"), "f"),
+      ("C.framework/Versions/A/c.h".into(), "c.h"),
+      (format!("{f}Versions/A/Headers/f.h"), "f.h"),
+      (format!("{s}Versions/A/Headers/s.h"), "s.h"),
+    ];
+    // Each before what it links to, an umbrella's before its subframework's.
+    let links = [
+      (format!("{f}Frameworks"), "Versions/Current/Frameworks"),
+      (format!("{f}F.tbd"), "Versions/Current/F.tbd"),
+      (format!("{f}Headers"), "Versions/Current/Headers"),
+      (format!("{f}Versions/Current"), "A"),
+      (format!("{s}Headers"), "Versions/Current/Headers"),
+      (format!("{s}Versions/Current"), "A"),
+      // Links in a folder through a link to it: one there, one to a file not there.
+      ("C.framework/Versions/Current".into(), "A"),
+      ("C.framework/Versions/A/Alias".into(), "../Current/c.h"),
+      ("C.framework/Versions/A/Gone".into(), "../Current/gone.h"),
+      // System.framework's: a version with only a link.
+      ("System.framework/System.tbd".into(), "Versions/Current/System.tbd"),
+      ("System.framework/Versions/Current".into(), "B"),
+      ("System.framework/Versions/B/System.tbd".into(), "../../../F.framework/F.tbd"),
+      // Into itself, in a loop, and to a file not there: never done.
+      (format!("{f}Versions/A/Loop"), ".."),
+      (format!("{f}Versions/A/Ping"), "Pong"),
+      (format!("{f}Versions/A/Pong"), "Ping"),
+      (format!("{f}Versions/A/Gone"), "Headers/gone.h"),
+    ];
+
+    let files: Vec<_> = files.iter().map(|(x, data)| (x.as_str(), *data)).collect();
+    let links: Vec<_> = links.iter().map(|(x, to)| (x.as_str(), *to, false)).collect();
+    let got = unpack(&tarball(&files, &links), |x| Some(PathBuf::from(x)), &root).unwrap();
+    materialize(&root, got).unwrap();
+
+    let read = |x: &str| fs::read_to_string(root.join(x)).ok();
+    assert_eq!(read("F.framework/F.tbd").as_deref(), Some("f"));
+    assert_eq!(read("F.framework/Headers/f.h").as_deref(), Some("f.h"));
+    assert_eq!(read("F.framework/Frameworks/S.framework/Headers/s.h").as_deref(), Some("s.h"));
+    assert_eq!(read("System.framework/System.tbd").as_deref(), Some("f"));
+    assert_eq!(read("C.framework/Versions/Current/Alias").as_deref(), Some("c.h"));
+    assert!(!root.join("F.framework/Versions/A/Loop").exists());
+    assert!(!root.join("F.framework/Versions/A/Ping").exists());
+    assert!(!root.join("F.framework/Versions/Current/Gone").exists());
     fs::remove_dir_all(root).unwrap();
   }
 

@@ -12,7 +12,8 @@ table's name, its name and arch are in the file name; a new one can have the emp
 release's snapshot.debian.org mirror moves to the latest snapshot when one of its packages
 changes. A snapshot lags Debian by up to six hours: until it has the new packages, nothing is
 written. Zig's source tarball, Apple's SDK, moves to Zig's latest release. LLVM's libc++ stays at
-20.1.8, by hand: its headers take clang 18, 22's need clang 20.
+20.1.8, by hand: its headers take clang 18, 22's need clang 20. objc2's crates, Swift's
+CoreFoundation and configd are bumped by hand too: `sdk` fails on a header its patches don't fit.
 
 An AlmaLinux or Alpine package is `mirrors: <table>, path: "<arch>/<path>", sha256: "<sha256>"`:
 its name is in the file name. AlmaLinux's is its latest build in the repodata, with its SHA-256;

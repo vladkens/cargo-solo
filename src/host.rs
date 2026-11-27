@@ -125,8 +125,8 @@ impl Host {
   }
 
   /// For Apple's `target`: [SDKROOT], its sysroot, and [DEPLOYMENT_TARGET], the oldest of rustc's
-  /// for Apple, each unless the user chose it. Neither has a name per target, so one value serves
-  /// both: rustc and the wrapper raise x86_64's 10.12 to arm64's minimum, 11.0.
+  /// for Apple, at least 10.13, each unless the user chose it. Neither has a name per target, so
+  /// one value serves both: rustc and the wrapper raise x86_64's to arm64's minimum, 11.0.
   fn darwin(
     &self,
     target: &Target,
@@ -166,8 +166,11 @@ impl Host {
       vers.push(ver.ok_or_else(|| bad(format!("rustc's deployment target: {text}")))?);
     }
 
-    let ver = vers.into_iter().min_by_key(|x| version(x));
-    out.extend(ver.map(|x| (DEPLOYMENT_TARGET.into(), x.into())));
+    // rustc's 10.12 for x86_64 lacks aligned `new`, which rocksdb's and duckdb's C++ take, as
+    // Xcode's libc++ marks it.
+    let ver = vers.into_iter().min_by_key(|x| version(x)).unwrap_or_default();
+    let ver = if version(&ver) < version("10.13") { "10.13".into() } else { ver };
+    out.push((DEPLOYMENT_TARGET.into(), ver.into()));
     Ok(out)
   }
 
