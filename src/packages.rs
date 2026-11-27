@@ -41,7 +41,8 @@ impl Libc {
 #[derive(Debug)]
 pub struct Package {
   pub mirrors: &'static [&'static str],
-  /// The path under each mirror, of a `.deb`, an `.rpm`, an `.apk`, a `.crate` or a `.tar.xz`.
+  /// The path under each mirror, of a `.deb`, an `.rpm`, an `.apk`, a `.crate`, a `.tar.xz` or a
+  /// `.tar.gz`.
   pub path: &'static str,
   pub sha256: &'static str,
   /// The folder in the archive the files are taken from; of those, the ones whose path there
@@ -83,6 +84,17 @@ const LLVM: &[&str] = &["https://github.com/llvm/llvm-project/releases/download/
 
 /// crates.io's files, which never change once published.
 const CRATES_IO: &[&str] = &["https://static.crates.io/crates"];
+
+/// The releases of Swift's CoreFoundation, Apple's own for Swift on Linux and Windows, on GitHub.
+const SWIFT_FOUNDATION: &[&str] =
+  &["https://github.com/swiftlang/swift-corelibs-foundation/archive/refs/tags"];
+
+/// The releases of configd, SystemConfiguration's source, on GitHub, where Apple publishes it.
+const CONFIGD: &[&str] = &["https://github.com/apple-oss-distributions/configd/archive/refs/tags"];
+
+/// The releases of Security, its framework's source, on GitHub, where Apple publishes it.
+const SECURITY: &[&str] =
+  &["https://github.com/apple-oss-distributions/Security/archive/refs/tags"];
 
 /// AlmaLinux 8.10's AppStream, RHEL 8's rebuilt, and kernel.org's copy: 8's last release, whose
 /// packages stay until 8's end in 2029.
@@ -316,6 +328,254 @@ pub const DARWIN: &[Package] = &[
     "objc2-system-configuration/objc2-system-configuration-0.3.2.crate",
     "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396",
   ),
+  // From Apple's open source, the headers C takes, set up for macOS by [sdk]: CoreFoundation's
+  // from Swift's (Apache 2.0), SystemConfiguration's from configd and Security's (APSL 2.0).
+  Package {
+    mirrors: SWIFT_FOUNDATION,
+    path: "swift-6.4.3-RELEASE.tar.gz",
+    sha256: "5dbff647b941ce93884535f5d90620a6dd49c1a7dc62e88f67e4843a26354602",
+    root: "swift-corelibs-foundation-swift-6.4.3-RELEASE/Sources/CoreFoundation/include/",
+    // Not Swift's own headers: ForSwiftFoundationOnly.h and the module maps.
+    keep: &["CF", "CoreFoundation.h"],
+    into: "System/Library/Frameworks/CoreFoundation.framework/Headers/",
+  },
+  Package {
+    mirrors: CONFIGD,
+    path: "configd-1405.120.5.tar.gz",
+    sha256: "f7ca6af8e6eb53a8daccac12d876d3967e62499e1ab5de46f9515487ec7ebe3e",
+    root: "configd-configd-1405.120.5/SystemConfiguration.fproj/",
+    keep: SC_HEADERS,
+    into: "System/Library/Frameworks/SystemConfiguration.framework/Headers/",
+  },
+  // Its headers for all of Apple's OSs, then macOS's own: in Xcode's SDK, one folder.
+  Package {
+    mirrors: SECURITY,
+    path: "Security-61901.120.67.tar.gz",
+    sha256: "aceecd4b51185e22641dfb20438a9094062b92bd64bc3da9d276f329c479dad2",
+    root: "Security-Security-61901.120.67/header_symlinks/Security/",
+    keep: SECURITY_HEADERS,
+    into: "System/Library/Frameworks/Security.framework/Headers/",
+  },
+  Package {
+    mirrors: SECURITY,
+    path: "Security-61901.120.67.tar.gz",
+    sha256: "aceecd4b51185e22641dfb20438a9094062b92bd64bc3da9d276f329c479dad2",
+    root: "Security-Security-61901.120.67/header_symlinks/macOS/Security/",
+    keep: SECURITY_HEADERS,
+    into: "System/Library/Frameworks/Security.framework/Headers/",
+  },
+];
+
+/// SystemConfiguration's public headers, the ones Xcode's SDK has of configd's.
+const SC_HEADERS: &[&str] = &[
+  "CaptiveNetwork.h",
+  "DHCPClientPreferences.h",
+  "SCDynamicStore.h",
+  "SCDynamicStoreCopyDHCPInfo.h",
+  "SCDynamicStoreCopySpecific.h",
+  "SCDynamicStoreKey.h",
+  "SCNetwork.h",
+  "SCNetworkConfiguration.h",
+  "SCNetworkConnection.h",
+  "SCNetworkReachability.h",
+  "SCPreferences.h",
+  "SCPreferencesPath.h",
+  "SCPreferencesSetSpecific.h",
+  "SCSchemaDefinitions.h",
+  "SystemConfiguration.h",
+];
+
+/// Security's public headers, the ones Xcode's SDK has.
+const SECURITY_HEADERS: &[&str] = &[
+  "Authorization.h",
+  "AuthorizationDB.h",
+  "AuthorizationPlugin.h",
+  "AuthorizationTags.h",
+  "AuthSession.h",
+  "certextensions.h",
+  "CipherSuite.h",
+  "CMSDecoder.h",
+  "CMSEncoder.h",
+  "CodeSigning.h",
+  "CSCommon.h",
+  "cssm.h",
+  "cssmaci.h",
+  "cssmapi.h",
+  "cssmapple.h",
+  "cssmcli.h",
+  "cssmconfig.h",
+  "cssmcspi.h",
+  "cssmdli.h",
+  "cssmerr.h",
+  "cssmkrapi.h",
+  "cssmkrspi.h",
+  "cssmspi.h",
+  "cssmtpi.h",
+  "cssmtype.h",
+  "eisl.h",
+  "emmspi.h",
+  "emmtype.h",
+  "mds_schema.h",
+  "mds.h",
+  "oids.h",
+  "oidsalg.h",
+  "oidsattr.h",
+  "oidsbase.h",
+  "oidscert.h",
+  "oidscrl.h",
+  "SecAccess.h",
+  "SecAccessControl.h",
+  "SecACL.h",
+  "SecAsn1Coder.h",
+  "SecAsn1Templates.h",
+  "SecAsn1Types.h",
+  "SecBase.h",
+  "SecCertificate.h",
+  "SecCertificateOIDs.h",
+  "SecCode.h",
+  "SecCodeHost.h",
+  "SecCustomTransform.h",
+  "SecDecodeTransform.h",
+  "SecDigestTransform.h",
+  "SecEncodeTransform.h",
+  "SecEncryptTransform.h",
+  "SecIdentity.h",
+  "SecIdentitySearch.h",
+  "SecImportExport.h",
+  "SecItem.h",
+  "SecKey.h",
+  "SecKeychain.h",
+  "SecKeychainItem.h",
+  "SecKeychainSearch.h",
+  "SecPolicy.h",
+  "SecPolicySearch.h",
+  "SecProtocolMetadata.h",
+  "SecProtocolObject.h",
+  "SecProtocolOptions.h",
+  "SecProtocolTypes.h",
+  "SecRandom.h",
+  "SecReadTransform.h",
+  "SecRequirement.h",
+  "SecSharedCredential.h",
+  "SecSignVerifyTransform.h",
+  "SecStaticCode.h",
+  "SecTask.h",
+  "SecTransform.h",
+  "SecTransformReadTransform.h",
+  "SecTrust.h",
+  "SecTrustedApplication.h",
+  "SecTrustSettings.h",
+  "SecureDownload.h",
+  "SecureTransport.h",
+  "Security.h",
+  "x509defs.h",
+];
+
+/// What SystemConfiguration exports that objc2 leaves out: its variadic function.
+const SC_EXTRA: &[&str] = &["SCDynamicStoreKeyCreate"];
+
+/// What Security exports that objc2 leaves out: functions that take a block, an XPC message or an
+/// audit token, and the OIDs of `oids.h`, libDER's.
+const SECURITY_EXTRA: &[&str] = &[
+  "SecCodeCreateWithXPCMessage",
+  "SecKeyGeneratePairAsync",
+  "SecTaskCreateWithAuditToken",
+  "SecTransformExecuteAsync",
+  "SecTrustEvaluateAsync",
+  "SecTrustEvaluateAsyncWithError",
+  "oidAdCAIssuer",
+  "oidAdOCSP",
+  "oidAnsip384r1",
+  "oidAnsip521r1",
+  "oidAnyExtendedKeyUsage",
+  "oidAnyPolicy",
+  "oidAuthorityInfoAccess",
+  "oidAuthorityKeyIdentifier",
+  "oidBasicConstraints",
+  "oidCertificatePolicies",
+  "oidCommonName",
+  "oidCountryName",
+  "oidCrlDistributionPoints",
+  "oidDescription",
+  "oidEcPrime192v1",
+  "oidEcPrime256v1",
+  "oidEcPubKey",
+  "oidEmailAddress",
+  "oidEntrustVersInfo",
+  "oidExtendedKeyUsage",
+  "oidExtendedKeyUsageClientAuth",
+  "oidExtendedKeyUsageCodeSigning",
+  "oidExtendedKeyUsageEmailProtection",
+  "oidExtendedKeyUsageIPSec",
+  "oidExtendedKeyUsageMicrosoftSGC",
+  "oidExtendedKeyUsageNetscapeSGC",
+  "oidExtendedKeyUsageOCSPSigning",
+  "oidExtendedKeyUsageServerAuth",
+  "oidExtendedKeyUsageTimeStamping",
+  "oidFee",
+  "oidFriendlyName",
+  "oidGoogleEmbeddedSignedCertificateTimestamp",
+  "oidGoogleOCSPSignedCertificateTimestamp",
+  "oidInhibitAnyPolicy",
+  "oidIssuerAltName",
+  "oidKeyUsage",
+  "oidLocalKeyId",
+  "oidLocalityName",
+  "oidMSNTPrincipalName",
+  "oidMd2",
+  "oidMd2Rsa",
+  "oidMd4",
+  "oidMd4Rsa",
+  "oidMd5",
+  "oidMd5Fee",
+  "oidMd5Rsa",
+  "oidNameConstraints",
+  "oidNetscapeCertType",
+  "oidOrganizationName",
+  "oidOrganizationalUnitName",
+  "oidPolicyConstraints",
+  "oidPolicyMappings",
+  "oidPrivateKeyUsagePeriod",
+  "oidQtCps",
+  "oidQtUNotice",
+  "oidRsa",
+  "oidSha1",
+  "oidSha1Dsa",
+  "oidSha1DsaCommonOIW",
+  "oidSha1DsaOIW",
+  "oidSha1Ecdsa",
+  "oidSha1Fee",
+  "oidSha1Rsa",
+  "oidSha1RsaOIW",
+  "oidSha224",
+  "oidSha224Ecdsa",
+  "oidSha224Rsa",
+  "oidSha256",
+  "oidSha256Ecdsa",
+  "oidSha256Rsa",
+  "oidSha384",
+  "oidSha384Ecdsa",
+  "oidSha384Rsa",
+  "oidSha512",
+  "oidSha512Ecdsa",
+  "oidSha512Rsa",
+  "oidStateOrProvinceName",
+  "oidSubjectAltName",
+  "oidSubjectInfoAccess",
+  "oidSubjectKeyIdentifier",
+  "sec_protocol_metadata_access_distinguished_names",
+  "sec_protocol_metadata_access_ocsp_response",
+  "sec_protocol_metadata_access_pre_shared_keys",
+  "sec_protocol_metadata_copy_peer_public_key",
+  "sec_protocol_metadata_create_secret",
+  "sec_protocol_metadata_create_secret_with_context",
+  "sec_protocol_options_add_pre_shared_key",
+  "sec_protocol_options_set_challenge_block",
+  "sec_protocol_options_set_key_update_block",
+  "sec_protocol_options_set_pre_shared_key_selection_block",
+  "sec_protocol_options_set_tls_diffie_hellman_parameters",
+  "sec_protocol_options_set_tls_pre_shared_key_identity_hint",
+  "sec_protocol_options_set_verify_block",
 ];
 
 /// Where objc2's crates go until [sdk] has read them.
@@ -324,14 +584,22 @@ const OBJC2: &str = "objc2/";
 /// The folder of the SDK's frameworks, where ld64 looks for them.
 const FRAMEWORKS: &str = "System/Library/Frameworks";
 
-/// CoreFoundation's variadic functions, which objc2 leaves out and core-foundation-sys binds.
-const CF_VARIADIC: &[&str] = &[
+/// What CoreFoundation exports that objc2 leaves out: its variadic functions, which
+/// core-foundation-sys binds, their `va_list` forms, and what its macros call for C, `CFSTR`'s
+/// class of constant strings among them.
+const CF_EXTRA: &[&str] = &[
   "CFCalendarAddComponents",
   "CFCalendarComposeAbsoluteTime",
   "CFCalendarDecomposeAbsoluteTime",
   "CFCalendarGetComponentDifference",
+  "CFMakeCollectable",
   "CFStringAppendFormat",
+  "CFStringAppendFormatAndArguments",
   "CFStringCreateWithFormat",
+  "CFStringCreateWithFormatAndArguments",
+  "__CFConstantStringClassReference",
+  "__CFRangeMake",
+  "__CFStringMakeConstantString",
 ];
 
 /// IOKit's private functions, which objc2 leaves out and sysinfo binds for Apple silicon's
@@ -654,7 +922,7 @@ fn fill(root: &Path, packages: &[Package]) -> io::Result<()> {
         let tar = match file.rsplit('.').next() {
           Some("deb") => member(&data, "data.tar.xz").and_then(xz),
           Some("rpm") => payload(&data).and_then(xz),
-          Some("apk" | "crate") => gunzip(&data),
+          Some("apk" | "crate" | "gz") => gunzip(&data),
           _ => xz(&data),
         };
 
@@ -715,7 +983,124 @@ fn sdk(root: &Path) -> io::Result<()> {
   fs::write(lib.join("libc++.tbd"), cxx)?;
   fs::write(lib.join("libc++abi.tbd"), abi)?;
 
+  // Swift's CoreFoundation is macOS's, but for Swift's runtime unless told: macOS's has its own
+  // constant strings, and its umbrella takes none of Swift's headers.
+  let cf = root.join(FRAMEWORKS).join("CoreFoundation.framework/Headers");
+  let swift = "#define DEPLOYMENT_RUNTIME_SWIFT ";
+  patch(&cf.join("CFAvailability.h"), &format!("{swift}1"), &format!("{swift}0"))?;
+  patch(&cf.join("CoreFoundation.h"), "#include \"CFConstantKeys.h\"\n", "")?;
+  patch(&cf.join("CoreFoundation.h"), "#include \"ForSwiftFoundationOnly.h\"\n", "")?;
+  // CFStream's dispatch queues, which macOS has and Swift's build turns on: Security's headers take
+  // dispatch through it.
+  patch(&cf.join("CFStream.h"), "#if __HAS_DISPATCH__\n", "#if 1\n")?;
+
+  // configd's and Security's headers as Apple's build installs them: an SPI unavailable, as it's
+  // not public, and without bridgeOS.
+  let sc = SC_HEADERS.iter().map(|x| ("SystemConfiguration", x));
+  for (fw, name) in sc.chain(SECURITY_HEADERS.iter().map(|x| ("Security", x))) {
+    let path = root.join(FRAMEWORKS).join(format!("{fw}.framework/Headers")).join(name);
+    fs::write(&path, no_bridgeos(&no_spi(&fs::read(&path)?)))?;
+  }
+
+  // libDER's `DERItem`, the type of Security's OIDs, written out: libDER isn't open source.
+  let der = "#ifndef _DER_ITEM_H_\n#define _DER_ITEM_H_\n#include <stddef.h>\n#include <stdint.h>\n\
+             typedef struct { uint8_t *data; size_t length; } DERItem;\n#endif\n";
+  let oids = root.join(FRAMEWORKS).join("Security.framework/Headers/oids.h");
+  patch(&oids, "#include <libDER/DERItem.h>\n", der)?;
+
   frameworks(root)
+}
+
+/// `text` with each SPI's mark, `SPI_AVAILABLE(macos(12.0), ios(15.0))` or `SPI_DEPRECATED("…",
+/// ios(2.0, 9.0))`, made `API_UNAVAILABLE(macos, ios)`, as in Xcode's headers: Zig's, as Xcode's,
+/// define the marks as nothing, which would leave an SPI available. Bytes, as [no_bridgeos].
+fn no_spi(text: &[u8]) -> Vec<u8> {
+  let marks = [&b"SPI_AVAILABLE("[..], b"SPI_DEPRECATED("];
+  let mut out = Vec::with_capacity(text.len());
+  let mut at = 0;
+  while at < text.len() {
+    let Some(mark) = marks.iter().find(|x| text[at..].starts_with(x)) else {
+      out.push(text[at]);
+      at += 1;
+      continue;
+    };
+
+    // Its platforms: each a name before a `(` in its list, past a message's quotes.
+    let (mut depth, mut quoted, mut names) = (1, false, vec![]);
+    let (mut word, mut end) = (at + mark.len(), at + mark.len());
+    while depth > 0 && end < text.len() {
+      match text[end] {
+        b'"' => quoted = !quoted,
+        b'(' if !quoted => {
+          if depth == 1 {
+            names.push(text[word..end].trim_ascii());
+          }
+
+          depth += 1;
+        }
+        b')' if !quoted => depth -= 1,
+        b',' if !quoted && depth == 1 => word = end + 1,
+        _ => {}
+      }
+
+      end += 1;
+    }
+
+    out.extend_from_slice(b"API_UNAVAILABLE(");
+    out.extend_from_slice(&names.join(&b", "[..]));
+    out.push(b')');
+    at = end;
+  }
+
+  out
+}
+
+/// `text` without bridgeOS in its availability marks, which only Apple's clang knows: `, bridgeos`
+/// in a list, `bridgeos, ` first in one, or `API_UNAVAILABLE(bridgeos)`, each with its version.
+/// Bytes, as some of Security's headers aren't UTF-8.
+fn no_bridgeos(text: &[u8]) -> Vec<u8> {
+  let (word, alone) = (b"bridgeos", b"API_UNAVAILABLE(");
+  let mut text = text.to_vec();
+  let mut from = 0;
+  while let Some(x) = text[from..].windows(word.len()).position(|x| x == word) {
+    let at = from + x;
+    let mut end = at + word.len();
+    if text.get(end) == Some(&b'(')
+      && let Some(x) = text[end..].iter().position(|&x| x == b')')
+    {
+      end += x + 1;
+    }
+
+    let lead = text[..at].trim_ascii_end();
+    let next = text[end..].trim_ascii_start();
+    let span = match (lead.last(), next.first()) {
+      (Some(b','), Some(b',' | b')')) => lead.len() - 1..end,
+      (Some(b'('), Some(b',')) => at..text.len() - next[1..].trim_ascii_start().len(),
+      (Some(b'('), Some(b')')) if lead.ends_with(alone) => {
+        lead.len() - alone.len()..text.len() - next.len() + 1
+      }
+      _ => {
+        from = end;
+        continue;
+      }
+    };
+
+    from = span.start;
+    text.drain(span);
+  }
+
+  text
+}
+
+/// Replaces `from` in the file at `path` with `to`; fails when it hasn't `from`, as a newer pin
+/// may not.
+fn patch(path: &Path, from: &str, to: &str) -> io::Result<()> {
+  let text = fs::read_to_string(path)?;
+  if !text.contains(from) {
+    return Err(bad(format!("{}: no {from:?}", path.display())));
+  }
+
+  fs::write(path, text.replace(from, to))
 }
 
 /// The `.tbd`s of macOS's libc++ and libc++abi from LLVM's lists of libc++'s exports per arch:
@@ -776,7 +1161,9 @@ fn frameworks(root: &Path) -> io::Result<()> {
 
     let mut symbols = externs_in(&dir.join(src))?;
     let extra = match name {
-      "CoreFoundation" => CF_VARIADIC,
+      "CoreFoundation" => CF_EXTRA,
+      "SystemConfiguration" => SC_EXTRA,
+      "Security" => SECURITY_EXTRA,
       "IOKit" => IOKIT_PRIVATE,
       _ => &[],
     };
@@ -910,9 +1297,20 @@ fn fetch(pkg: &Package, path: &Path) -> io::Result<Vec<u8>> {
     let url = format!("{mirror}/{}", pkg.path);
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60"]);
-    curl.args(["--retry", "2", "-o"]).arg(path).arg(&url);
+    curl.args(["--retry", "2", "-C", "-", "-o"]).arg(path).arg(&url);
 
-    let got = run(&mut curl).and_then(|_| fs::read(path));
+    // A download cut short goes on where it stopped, while each try gets more.
+    let mut got = run(&mut curl);
+    let mut size = 0;
+    while let Err(_) = got
+      && let Ok(x) = fs::metadata(path)
+      && x.len() > size
+    {
+      size = x.len();
+      got = run(&mut curl);
+    }
+
+    let got = got.and_then(|_| fs::read(path));
     let _ = fs::remove_file(path);
     match got {
       Ok(data) => {
@@ -957,7 +1355,7 @@ mod tests {
     for pkg in every_package() {
       let hex = pkg.sha256.bytes().all(|x| x.is_ascii_digit() || (b'a'..=b'f').contains(&x));
       assert!(pkg.sha256.len() == 64 && hex, "{}", pkg.path);
-      let kinds = [".deb", ".rpm", ".apk", ".crate", ".tar.xz"];
+      let kinds = [".deb", ".rpm", ".apk", ".crate", ".tar.xz", ".tar.gz"];
       assert!(kinds.iter().any(|x| pkg.path.ends_with(x)), "{}", pkg.path);
       assert!(pkg.mirrors.iter().all(|x| x.starts_with("https://") && !x.ends_with('/')));
       assert!(pkg.root.is_empty() || pkg.root.ends_with('/'));
@@ -1054,7 +1452,8 @@ mod tests {
     let (arm, x86) = (abi("__Zarm"), abi("__Zx86"));
     let config = |x| format!("framework = \"{x}\"\n");
     let (cf, sec) = (config("CoreFoundation"), config("Security"));
-    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi, objc2's.
+    // Each with the package whose file it's in: Zig's, LLVM's libc++ and libc++abi, objc2's,
+    // Swift's CoreFoundation, configd, Security.
     let mut files = vec![
       (0, at(0, "stdio.h"), "stdio"),
       (0, at(0, "sys/types.h"), "types"),
@@ -1083,12 +1482,37 @@ mod tests {
       files.push((i, format!("x{i}/src/lib.rs"), ""));
     }
 
+    let umbrella = "#include \"CFBase.h\"\n#include \"CFConstantKeys.h\"\n\
+                    #include \"ForSwiftFoundationOnly.h\"\n";
+    files.extend([
+      (14, at(14, "CFAvailability.h"), "#define DEPLOYMENT_RUNTIME_SWIFT 1\n"),
+      (14, at(14, "CoreFoundation.h"), umbrella),
+      (14, at(14, "CFStream.h"), "#if __HAS_DISPATCH__\n#include <dispatch/dispatch.h>\n"),
+      // Not taken: Swift's own.
+      (14, at(14, "ForSwiftFoundationOnly.h"), "swift"),
+      (14, at(14, "module.modulemap"), "module"),
+      (15, at(15, "SCPrivate.h"), "private"),
+    ]);
+    let sc = "f(void) API_UNAVAILABLE(ios, bridgeos) SPI_AVAILABLE(ios(2.0), bridgeos(1.0));";
+    files.extend(SC_HEADERS.iter().map(|x| (15, at(15, x), sc)));
+
+    let mine = ["SecBase.h", "oids.h", "SecKeychain.h"];
+    let others = SECURITY_HEADERS.iter().filter(|x| !mine.contains(x));
+    files.extend(others.map(|x| (16, at(16, x), "")));
+    files.extend([
+      (16, at(16, "SecBase.h"), "API_UNAVAILABLE(ios, bridgeos, macCatalyst)"),
+      (16, at(16, "oids.h"), "#include <libDER/DERItem.h>\nextern const DERItem oidRsa;\n"),
+      // Not taken: a private one.
+      (16, at(16, "SecItemPriv.h"), "private"),
+      (17, at(17, "SecKeychain.h"), "API_AVAILABLE(macos(1), bridgeos(NA))"),
+    ]);
+
     let mirror: &str = format!("file://{}", root.display()).leak();
     let mut pkgs = vec![];
     for pkg in DARWIN {
       let mine = files.iter().filter(|(i, ..)| DARWIN[*i].path == pkg.path);
       let tar = tarball(&mine.map(|(_, x, data)| (x.as_str(), *data)).collect::<Vec<_>>(), &[]);
-      let data = match pkg.path.ends_with(".crate") {
+      let data = match pkg.path.ends_with(".crate") || pkg.path.ends_with(".gz") {
         true => {
           let mut gz = GzEncoder::new(vec![], Compression::default());
           gz.write_all(&tar).unwrap();
@@ -1134,8 +1558,10 @@ mod tests {
     let install = "'/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'";
     assert!(cf.contains(&format!("install-name: {install}\n")));
     assert!(cf.contains("symbols: [ '_CFArrayCreate', '_CFCalendarAddComponents', "));
+    assert!(cf.contains("'___CFConstantStringClassReference'"));
     let sec = read("System/Library/Frameworks/Security.framework/Security.tbd");
-    assert!(sec.contains("symbols: [ '_kSecClass' ]\n"));
+    assert!(sec.contains("'_SecTrustEvaluateAsyncWithError', '_kSecClass', '_oid"));
+    assert!(sec.contains("'_oidRsa'"));
     let objc = read("usr/lib/libobjc.tbd");
     assert!(objc.contains("install-name: '/usr/lib/libobjc.A.dylib'\n"));
     assert!(objc.contains("symbols: [ '_objc_retain' ]\n"));
@@ -1150,11 +1576,71 @@ mod tests {
     assert_eq!(names("usr"), ["include", "lib"]);
     assert!(names("usr/lib").iter().all(|x| !x.to_string_lossy().ends_with(".abilist")));
     assert_eq!(names(v1), ["__assertion_handler", "__config_site", "cxxabi.h", "vector"]);
-    assert_eq!(
-      names(FRAMEWORKS),
-      ["CoreFoundation.framework", "Security.framework", "X.framework"]
+    let frameworks =
+      ["CoreFoundation.framework", "Security.framework", "SystemConfiguration.framework"];
+    assert_eq!(names(FRAMEWORKS), [&frameworks[..], &["X.framework"]].concat());
+
+    let headers = format!("{FRAMEWORKS}/CoreFoundation.framework/Headers/");
+    assert_eq!(names(&headers), ["CFAvailability.h", "CFStream.h", "CoreFoundation.h"]);
+    assert_eq!(read(&format!("{headers}CFStream.h")), "#if 1\n#include <dispatch/dispatch.h>\n");
+    assert_eq!(read(&format!("{headers}CFAvailability.h")), "#define DEPLOYMENT_RUNTIME_SWIFT 0\n");
+    assert_eq!(read(&format!("{headers}CoreFoundation.h")), "#include \"CFBase.h\"\n");
+
+    let headers = format!("{FRAMEWORKS}/SystemConfiguration.framework/Headers/");
+    assert_eq!(names(&headers), SC_HEADERS);
+    let sc = "f(void) API_UNAVAILABLE(ios) API_UNAVAILABLE(ios);";
+    assert_eq!(read(&format!("{headers}SCDynamicStore.h")), sc);
+
+    let headers = format!("{FRAMEWORKS}/Security.framework/Headers/");
+    let mut all = SECURITY_HEADERS.to_vec();
+    all.sort();
+    assert_eq!(names(&headers), all);
+    assert_eq!(read(&format!("{headers}SecBase.h")), "API_UNAVAILABLE(ios, macCatalyst)");
+    assert_eq!(read(&format!("{headers}SecKeychain.h")), "API_AVAILABLE(macos(1))");
+    assert!(
+      read(&format!("{headers}oids.h")).contains("size_t length; } DERItem;\n#endif\nextern")
     );
     fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn no_spi_makes_an_spi_unavailable() {
+    let cases = [
+      ("f(void) SPI_AVAILABLE(macos(12.0), ios(15.0));", "f(void) API_UNAVAILABLE(macos, ios);"),
+      (
+        "SPI_DEPRECATED(\"not (yet)\", ios(1.0, 15.0), tvos(9.0, 15.0)) x",
+        "API_UNAVAILABLE(ios, tvos) x",
+      ),
+      (
+        "SPI_AVAILABLE_BEGIN(ios(2.0)) SPI_AVAILABLE",
+        "SPI_AVAILABLE_BEGIN(ios(2.0)) SPI_AVAILABLE",
+      ),
+    ];
+    for (text, want) in cases {
+      assert_eq!(String::from_utf8(no_spi(text.as_bytes())).unwrap(), want, "{text}");
+    }
+
+    assert_eq!(no_spi(b"\xd5 SPI_AVAILABLE(ios(2.0))"), b"\xd5 API_UNAVAILABLE(ios)");
+  }
+
+  #[test]
+  fn no_bridgeos_drops_it_from_availability() {
+    let cases = [
+      ("API_UNAVAILABLE(ios, bridgeos, macCatalyst)", "API_UNAVAILABLE(ios, macCatalyst)"),
+      (
+        "API_AVAILABLE(macos(10.7), ios(NA), bridgeos(NA));",
+        "API_AVAILABLE(macos(10.7), ios(NA));",
+      ),
+      ("SPI_AVAILABLE(bridgeos(1.0), ios(2.0))", "SPI_AVAILABLE(ios(2.0))"),
+      ("f(void)\n    API_UNAVAILABLE(bridgeos);", "f(void)\n    ;"),
+      ("/* bridgeos */ API_UNAVAILABLE(ios , bridgeos)", "/* bridgeos */ API_UNAVAILABLE(ios )"),
+      ("\u{d5} bridgeos", "\u{d5} bridgeos"),
+    ];
+    for (text, want) in cases {
+      assert_eq!(String::from_utf8(no_bridgeos(text.as_bytes())).unwrap(), want, "{text}");
+    }
+
+    assert_eq!(no_bridgeos(b"\xd5 x, bridgeos)"), b"\xd5 x)");
   }
 
   #[test]

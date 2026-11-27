@@ -11,10 +11,10 @@ uv run scripts/e2e.py all <dir>     the two on this host (`make e2e`)
 
 `build` checks each binary's file: `-linux-gnu` needs no glibc symbol over 2.28 and no shared
 libstdc++, `-linux-musl` is static, `-windows-gnu` imports only Windows' own DLLs, `-apple-darwin`
-loads only the system's dylibs and runs on rustc's oldest macOS. `run` takes any host's binaries,
-found anywhere under <dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for musl; the other
-arch through QEMU), Windows ones on Windows, Apple ones on a Mac (x86_64 through Rosetta). CI builds
-on each OS and runs on each (.github/workflows/main.yml).
+loads only the system's dylibs and runs on the oldest macOS cargo-solo builds for. `run` takes any
+host's binaries, found anywhere under <dir>: Linux ones in Docker (Debian 10 for glibc, Alpine for
+musl; the other arch through QEMU), Windows ones on Windows, Apple ones on a Mac (x86_64 through
+Rosetta). CI builds on each OS and runs on each (.github/workflows/main.yml).
 
 With E2E_FULL=true, as CI on main and release PRs: release builds, and tests/hello with aws-lc-rs.
 """
@@ -37,8 +37,9 @@ SYSTEM_DLL = re.compile(
     r"(?i)^(kernel32|msvcrt|ntdll|userenv|ws2_32|advapi32|bcrypt|bcryptprimitives"
     r"|api-ms-win-.+)\.dll$"
 )
-# The oldest macOS rustc builds for, which Apple's binaries must not raise.
-MACOS = {"aarch64": (11, 0), "x86_64": (10, 12)}
+# The oldest macOS cargo-solo builds for, rustc's or aligned `new`'s, which Apple's binaries must not
+# raise.
+MACOS = {"aarch64": (11, 0), "x86_64": (10, 13)}
 SHA = hashlib.sha256(b"cargo-solo").hexdigest()[:16]
 FULL = os.environ.get("E2E_FULL") == "true"
 PROFILE = "release" if FULL else "debug"
